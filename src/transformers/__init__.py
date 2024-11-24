@@ -739,6 +739,7 @@ _import_structure = {
     ],
     "models.rt_detr": ["RTDetrConfig", "RTDetrResNetConfig"],
     "models.rwkv": ["RwkvConfig"],
+    "models.rwkv6": ["Rwkv6Config"],
     "models.sam": [
         "SamConfig",
         "SamMaskDecoderConfig",
@@ -3408,6 +3409,14 @@ else:
             "RwkvForCausalLM",
             "RwkvModel",
             "RwkvPreTrainedModel",
+        ]
+    )
+    _import_structure["models.rwkv6"].extend(
+        [
+            "Rwkv6ForCausalLM",
+            "Rwkv6Model",
+            "Rwkv6PreTrainedModel",
+            "Rwkv6Tokenizer",
         ]
     )
     _import_structure["models.sam"].extend(
@@ -6154,6 +6163,7 @@ if TYPE_CHECKING:
         from .models.xglm import XGLMTokenizer
         from .models.xlm_roberta import XLMRobertaTokenizer
         from .models.xlnet import XLNetTokenizer
+        from .models.rwkv6 import Rwkv6Tokenizer
 
     try:
         if not is_tokenizers_available():
@@ -8071,6 +8081,11 @@ if TYPE_CHECKING:
             RwkvForCausalLM,
             RwkvModel,
             RwkvPreTrainedModel,
+        )
+        from .models.rwkv6 import (
+            Rwkv6ForCausalLM,
+            Rwkv6Model,
+            Rwkv6PreTrainedModel,
         )
         from .models.sam import (
             SamModel,
