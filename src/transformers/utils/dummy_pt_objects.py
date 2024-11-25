@@ -8442,6 +8442,7 @@ class RwkvPreTrainedModel(metaclass=DummyObject):
     def __init__(self, *args, **kwargs):
         requires_backends(self, ["torch"])
 
+
 class Rwkv6ForCausalLM(metaclass=DummyObject):
     _backends = ["torch"]
 
