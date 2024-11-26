@@ -5813,6 +5813,7 @@ if TYPE_CHECKING:
         RTDetrResNetConfig,
     )
     from .models.rwkv import RwkvConfig
+    from .models.rwkv6 import Rwkv6Config
     from .models.sam import (
         SamConfig,
         SamMaskDecoderConfig,
