@@ -740,6 +740,7 @@ _import_structure = {
     "models.rt_detr": ["RTDetrConfig", "RTDetrResNetConfig"],
     "models.rwkv": ["RwkvConfig"],
     "models.rwkv6": ["Rwkv6Config"],
+    "models.rwkv_hybrid": ["RwkvHybridConfig"],
     "models.sam": [
         "SamConfig",
         "SamMaskDecoderConfig",
@@ -3419,6 +3420,13 @@ else:
             "Rwkv6Tokenizer",
         ]
     )
+    _import_structure["models.rwkv_hybrid"].extend(
+        [
+            "RwkvHybridForCausalLM",
+            "RwkvHybridModel",
+            "RwkvHybridPreTrainedModel",
+        ]
+    )
     _import_structure["models.sam"].extend(
         [
             "SamModel",
@@ -5814,6 +5822,7 @@ if TYPE_CHECKING:
     )
     from .models.rwkv import RwkvConfig
     from .models.rwkv6 import Rwkv6Config
+    from .models.rwkv_hybrid import RwkvHybridConfig
     from .models.sam import (
         SamConfig,
         SamMaskDecoderConfig,
@@ -8087,6 +8096,11 @@ if TYPE_CHECKING:
             Rwkv6ForCausalLM,
             Rwkv6Model,
             Rwkv6PreTrainedModel,
+        )
+        from .models.rwkv_hybrid import (
+            RwkvHybridForCausalLM,
+            RwkvHybridModel,
+            RwkvHybridPreTrainedModel
         )
         from .models.sam import (
             SamModel,
