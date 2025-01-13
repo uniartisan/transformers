@@ -1,13 +1,18 @@
 import torch
 from einops import rearrange
 
-from rwkvfla.ops.rwkv7 import fused_recurrent_rwkv7
-from .utilities import TimeMixState, ChannelMixState, BlockState
+from .utilities import TimeMixState, BlockState
 import math
 import torch.nn as nn
 from torch.nn import functional as F
 from .configuration_rwkv_hybrid import RwkvHybridConfig
 
+try:
+    import triton
+    from rwkvfla.ops.rwkv7 import fused_recurrent_rwkv7, native_recurrent_rwkv7  # pylint: disable=C0411
+except ImportError:
+    from rwkvfla.ops.rwkv7 import native_recurrent_rwkv7  # pylint: disable=C0411
+    fused_recurrent_rwkv7 = native_recurrent_rwkv7
 
 class RWKV_Tmix_x070(nn.Module):
     def __init__(self, args: RwkvHybridConfig, layer_id, update_v_first, get_v_first):
@@ -126,8 +131,8 @@ class RWKV_Tmix_x070(nn.Module):
         w = rearrange(w, "b l (h d) -> b h l d", h=self.n_head)
         a = rearrange(a, "b l (h d) -> b h l d", h=self.n_head)
         b = rearrange(b, "b l (h d) -> b h l d", h=self.n_head)
-
-        o, state = fused_recurrent_rwkv7(
+        wkv7_func = native_recurrent_rwkv7 if r.device == "cpu" else fused_recurrent_rwkv7
+        o, state = wkv7_func(
             r,
             k,
             v,
