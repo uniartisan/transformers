@@ -244,6 +244,21 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    def post_init(self):
+        """
+        A method executed at the end of each Transformer model initialization, to execute code that needs the model's
+        modules properly initialized (such as weight initialization).
+        """
+        self.init_weights()
+        self._backward_compatibility_gradient_checkpointing()
+        # If current model is a base model, attach `base_model_tp_plan` from config
+        if self.base_model is self:
+            self._tp_plan = self.config.base_model_tp_plan
+        from transformers.modeling_utils import _init_weights
+        if _init_weights:
+            for layer in self.layers:
+                layer.self_attn.time_mixer.post_init()
+
     def update_v_first(self, new_v_first):
         """Callback function to update v_first in HybridModel."""
         self.thread_local.v_first = new_v_first
