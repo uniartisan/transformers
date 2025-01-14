@@ -187,11 +187,15 @@ class RwkvHybridConfig(PretrainedConfig):
         self.wkv_has_gate = wkv_has_gate
         self.wkv_has_group_norm = wkv_has_group_norm
 
-        if type(wkv_layers) == str and wkv_layers == "full":
+        if wkv_layers == "full" or wkv_layers == None:
             self.wkv_layers = list(range(num_hidden_layers))
-        
-        if wkv_layers == None:
-            self.wkv_layers = list(range(num_hidden_layers))
+        elif isinstance(wkv_layers, list):
+            if all(isinstance(layer, int) for layer in wkv_layers):
+                self.wkv_layers = wkv_layers
+            else:
+                raise ValueError("All elements in wkv_layers must be integers.")
+        else:
+            raise TypeError("wkv_layers must be either 'full', None, or a list of integers.")
 
         # for backward compatibility
         if num_key_value_heads is None:
