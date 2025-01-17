@@ -36,45 +36,110 @@ from transformers.models.rwkv.modeling_rwkv import RwkvForCausalLM, RwkvModel, R
 from transformers.models.rwkv.modeling_rwkv import RwkvCausalLMOutput, RwkvOutput
 
 from .configuration_rwkv6 import Rwkv6Config
+import os
+import sys
+
+sys.path.append(os.environ['WKV_LIB'])
+import rwkv6_vector
+
+import functools
 
 
-def check_dependencies():
-    missing_deps = []
 
-    try:
-        import triton  # noqa: F401
-    except ImportError:
-        missing_deps.append("triton>=3.0.0")
+def naive_recurrent_rwkv6(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    w: torch.Tensor,
+    u: torch.Tensor,
+    scale: float = 1.0,
+    initial_state: Optional[torch.Tensor] = None,
+    output_final_state: bool = False,
+    u_2d: bool = False,
+):
+    orig_dtype = q.dtype
+    B, H, T, K, V = q.shape[0], q.shape[1], q.shape[2], q.shape[3], v.shape[-1]
 
-    try:
-        import rwkvfla  # noqa: F401
-    except ImportError:
-        missing_deps.append("rwkv-fla")
+    o = torch.zeros_like(v)
+    h = initial_state.clone()
 
-    if missing_deps:
-        install_instructions = """
-Required dependencies are missing. Please install them using:
-
-{}
-
-""".strip()
-        install_commands = "\n".join(f"pip install {dep}" for dep in missing_deps)
-        print(install_instructions.format(install_commands))
-        return False
-    else:
-        return True
+    w = -torch.exp(w)
+    w = w.exp()
 
 
-if check_dependencies():
-    # flake8: noqa: E402
-    from rwkvfla.ops.rwkv6.chunk import chunk_rwkv6  # pylint: disable=C0411
-    from rwkvfla.ops.rwkv6.fused_recurrent import fused_recurrent_rwkv6  # pylint: disable=C0411
-    from rwkvfla.ops.rwkv6.recurrent_naive import native_recurrent_rwkv6  # pylint: disable=C0411
-else:
-    from .wkv6 import native_recurrent_rwkv6
+    for i in range(T):
+        q_i = q[:, :, i, :]
+        k_i = k[:, :, i]
+        v_i = v[:, :, i, :]
+        w_i = w[:, :, i]
+        kv_i = k_i[..., None] * v_i[..., None, :]
+        o_i = (h + u[None, ..., None] * kv_i) * q_i[..., None]
+        o[:, :, i] = o_i.sum(-2)
+        h = h * w_i[..., None] + kv_i
 
-    chunk_rwkv6 = native_recurrent_rwkv6
-    fused_recurrent_rwkv6 = native_recurrent_rwkv6
+    ht = h.to(orig_dtype) if output_final_state else None
+    return o.to(orig_dtype), ht
+
+
+def ascend_recurrent_rwkv6(
+    r: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    w: torch.Tensor,
+    u: torch.Tensor,
+    scale: float = 1.0,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False,
+    training: bool = True,
+    causal: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    B, HEADS, T, HEADS_DIM  = r.shape[0], r.shape[1], r.shape[2], r.shape[3]
+    o2, state2 = rwkv6_vector.run_rwkv6_vector(B, T, HEADS, HEADS_DIM, r, k, v, w, u, initial_state)
+    return o2, state2
+
+
+def native_recurrent_rwkv6(
+    r: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    w: torch.Tensor,
+    u: torch.Tensor,
+    scale: float = 1.0,
+    initial_state: torch.Tensor = None,
+    output_final_state: bool = False,
+    training: bool = True,
+    causal: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    r"""
+    Args:
+        r (torch.Tensor):
+            reception of shape `(B, H, T, K)`. Alias: q, query in linear attention.
+        k (torch.Tensor):
+            keys of shape `(B, H, T, K)`
+        v (torch.Tensor):
+            values of shape `(B, H, T, V)`
+        w (torch.Tensor):
+            data-dependent decays of shape `(B, H, T, K)` in log space! Alias: g.
+        u (torch.Tensor):
+            bonus of shape `(H, K)` or `(B, H, K)` for each head.
+        scale (Optional[int]):
+            Scale factor for the RWKV6 attention scores.
+            If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
+        initial_state (Optional[torch.Tensor]):
+            Initial state of shape `(B, H, K, V)`. Default: `None`.
+        output_final_state (Optional[bool]):
+            Whether to output the final state of shape `(B, H, K, V)`. Default: `False`.
+    """
+    if scale == -1.0:
+        scale = r.shape[-1] ** -0.5
+    u_2d = True if u.dim() == 2 else False
+    o, final_state = naive_recurrent_rwkv6(r, k, v, w, u, scale, initial_state, output_final_state, u_2d)
+
+    return o, final_state
+
+
+chunk_rwkv6 = native_recurrent_rwkv6
+fused_recurrent_rwkv6 = native_recurrent_rwkv6
 
 
 logger = logging.get_logger(__name__)
@@ -91,6 +156,7 @@ def rwkv6_linear_attention(
     time_decay,
     time_first,
     state,
+    layer_id,
 ):
     one_token = key.size(1) == 1
     batch, seq_length, _ = receptance.shape
@@ -100,21 +166,25 @@ def rwkv6_linear_attention(
     value = value.view(batch, seq_length, num_heads, head_size).transpose(1, 2)  # B, T, H, K - > B, H, T, V
     receptance = receptance.view(batch, seq_length, num_heads, head_size).transpose(1, 2)  # B, H, T, K
     time_decay = (
-        -torch.exp(time_decay).view(batch, seq_length, num_heads, head_size).permute(0, 2, 1, 3)
+        time_decay.view(batch, seq_length, num_heads, head_size).permute(0, 2, 1, 3)
     )  # B, T, H, K -> B, H, T, K
     time_first = time_first.reshape(num_heads, head_size)  # H, K
     if receptance.device.type == "cpu":
         out, state = native_recurrent_rwkv6(
             receptance, key, value, time_decay, time_first, scale=1.0, initial_state=state, output_final_state=True
         )
-    elif one_token:
-        out, state = fused_recurrent_rwkv6(
-            receptance, key, value, time_decay, time_first, scale=1.0, initial_state=state, output_final_state=True
-        )
     else:
-        out, state = chunk_rwkv6(
-            receptance, key, value, time_decay, time_first, scale=1.0, initial_state=state, output_final_state=True
+        torch.npu.synchronize()
+        
+        out, state = ascend_recurrent_rwkv6(
+            receptance.contiguous(), key.contiguous(), value.contiguous(),
+            time_decay.contiguous(), time_first.contiguous(), scale=1.0, 
+            initial_state=state.contiguous(),
+            output_final_state=True
         )
+    
+        torch.npu.synchronize()
+    
     return out.transpose(1, 2), state
 
 
@@ -217,6 +287,7 @@ class Rwkv6SelfAttention(nn.Module):
             time_decay,
             self.time_faaaa,
             layer_state,
+            self.layer_id,
         )
 
         if layer_state is not None:
