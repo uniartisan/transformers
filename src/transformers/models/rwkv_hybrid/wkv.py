@@ -14,6 +14,7 @@ except ImportError:
     from rwkvfla.ops.rwkv7 import native_recurrent_rwkv7  # pylint: disable=C0411
     fused_recurrent_rwkv7 = native_recurrent_rwkv7
 
+
 class RWKV_Tmix_x070(nn.Module):
     def __init__(self, args: RwkvHybridConfig, layer_id, update_v_first, get_v_first):
         super().__init__()
@@ -65,18 +66,22 @@ class RWKV_Tmix_x070(nn.Module):
 
         # 层定义
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-        self.receptance = nn.Linear(args.hidden_size, args.hidden_size, bias=False)
+        self.receptance = nn.Linear(
+            args.hidden_size, args.hidden_size, bias=False)
         self.key = nn.Linear(args.hidden_size, args.hidden_size, bias=False)
         self.value = nn.Linear(args.hidden_size, args.hidden_size, bias=False)
         self.output = nn.Linear(args.hidden_size, args.hidden_size, bias=False)
 
         if self.args.wkv_has_group_norm:
-            self.ln_x = nn.GroupNorm(H, args.hidden_size, eps=(1e-5) * (args.head_size_divisor**2))
-            
+            self.ln_x = nn.GroupNorm(H, args.hidden_size, eps=(
+                1e-5) * (args.head_size_divisor**2))
+
     def post_init(self):
         with torch.no_grad():
-            ratio_0_to_1 = self.layer_id / (self.args.num_hidden_layers - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (self.layer_id / self.args.num_hidden_layers)  # 1 to ~0
+            ratio_0_to_1 = self.layer_id / \
+                (self.args.num_hidden_layers - 1)  # 0 to 1
+            ratio_1_to_almost0 = 1.0 - \
+                (self.layer_id / self.args.num_hidden_layers)  # 1 to ~0
 
             # 初始化 ddd
             ddd = torch.ones(1, 1, self.args.hidden_size)
@@ -84,52 +89,67 @@ class RWKV_Tmix_x070(nn.Module):
                 ddd[0, 0, i] = i / self.args.hidden_size
 
             # 使用 nn.init 初始化 x_r, x_w, x_k, x_v, x_a, x_g
-            nn.init.constant_(self.x_r, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
-            nn.init.constant_(self.x_w, 1.0 - torch.pow(ddd, 0.9 * ratio_1_to_almost0))
-            nn.init.constant_(self.x_k, 1.0 - (torch.pow(ddd, 0.9 * ratio_1_to_almost0) + 0.4 * ratio_0_to_1))
-            nn.init.constant_(self.x_v, 1.0 - (torch.pow(ddd, 0.4 * ratio_1_to_almost0) + 0.6 * ratio_0_to_1))
-            nn.init.constant_(self.x_a, 1.0 - torch.pow(ddd, 0.9 * ratio_1_to_almost0))
-            nn.init.constant_(self.x_g, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
+            nn.init.constant_(
+                self.x_r, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
+            nn.init.constant_(
+                self.x_w, 1.0 - torch.pow(ddd, 0.9 * ratio_1_to_almost0))
+            nn.init.constant_(
+                self.x_k, 1.0 - (torch.pow(ddd, 0.9 * ratio_1_to_almost0) + 0.4 * ratio_0_to_1))
+            nn.init.constant_(
+                self.x_v, 1.0 - (torch.pow(ddd, 0.4 * ratio_1_to_almost0) + 0.6 * ratio_0_to_1))
+            nn.init.constant_(
+                self.x_a, 1.0 - torch.pow(ddd, 0.9 * ratio_1_to_almost0))
+            nn.init.constant_(
+                self.x_g, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
 
             def ortho_init(x, scale):
                 shape = x.shape
                 original_dtype = x.dtype
                 x_fp32 = x.float()
                 if len(shape) == 2:
-                    gain = (math.sqrt(shape[0] / shape[1]) if shape[0] > shape[1] else 1)
+                    gain = (math.sqrt(shape[0] / shape[1])
+                            if shape[0] > shape[1] else 1)
                     nn.init.orthogonal_(x_fp32, gain=gain * scale)
                 elif len(shape) == 3:
-                    gain = (math.sqrt(shape[1] / shape[2]) if shape[1] > shape[2] else 1)
+                    gain = (math.sqrt(shape[1] / shape[2])
+                            if shape[1] > shape[2] else 1)
                     for i in range(shape[0]):
                         nn.init.orthogonal_(x_fp32[i], gain=gain * scale)
                 else:
-                    raise ValueError("ortho_init only supports 2D or 3D tensors")
+                    raise ValueError(
+                        "ortho_init only supports 2D or 3D tensors")
                 x.data.copy_(x_fp32.to(original_dtype))
                 return x
-            
+
             D_DECAY_LORA = 64
             nn.init.zeros_(self.w1)
-            self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, self.args.hidden_size), 0.1))
+            self.w2 = nn.Parameter(ortho_init(torch.zeros(
+                D_DECAY_LORA, self.args.hidden_size), 0.1))
 
             decay_speed = torch.ones(self.args.hidden_size)
             for n in range(self.args.hidden_size):
-                decay_speed[n] = -7 + 5 * (n / (self.args.hidden_size - 1)) ** (0.85 + 1.0 * ratio_0_to_1**0.5)
-            nn.init.constant_(self.w0, decay_speed.reshape(1, 1, self.args.hidden_size) + 0.5)
+                decay_speed[n] = -7 + 5 * (n / (self.args.hidden_size - 1)
+                                           ) ** (0.85 + 1.0 * ratio_0_to_1**0.5)
+            nn.init.constant_(self.w0, decay_speed.reshape(
+                1, 1, self.args.hidden_size) + 0.5)
 
             D_AAA_LORA = 64
             nn.init.zeros_(self.a1)
-            self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, self.args.hidden_size), 0.1))
+            self.a2 = nn.Parameter(ortho_init(torch.zeros(
+                D_AAA_LORA, self.args.hidden_size), 0.1))
             nn.init.zeros_(self.a0)
 
             D_MV_LORA = 32
             nn.init.zeros_(self.v1)
-            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, self.args.hidden_size), 0.1))
+            self.v2 = nn.Parameter(ortho_init(
+                torch.zeros(D_MV_LORA, self.args.hidden_size), 0.1))
             nn.init.constant_(self.v0, 1.0)
 
             D_GATE_LORA = 128
             if self.args.wkv_has_gate:
                 nn.init.zeros_(self.g1)
-                self.g2 = nn.Parameter(ortho_init(torch.zeros(D_GATE_LORA, self.args.hidden_size), 0.1))
+                self.g2 = nn.Parameter(ortho_init(torch.zeros(
+                    D_GATE_LORA, self.args.hidden_size), 0.1))
 
             nn.init.constant_(self.k_k, 0.85)
             nn.init.constant_(self.k_a, 1.0)
@@ -243,7 +263,7 @@ class Rwkv7Attention(nn.Module):
                 last_state = past_key_value[self.layer_idx][0]
         if last_state is None:
             wkv_states = torch.zeros(
-                (B, self.HeadNums, C // self.HeadNums, C // self.HeadNums), device=attn_output.device, dtype=attn_output.dtype)
+                (B, self.HeadNums, C // self.HeadNums, C // self.HeadNums), device=attn_output.device, dtype=torch.float32)
             token_shift = torch.zeros(
                 (B, C), device=attn_output.device, dtype=attn_output.dtype)
             time_state = TimeMixState(token_shift, wkv_states)
