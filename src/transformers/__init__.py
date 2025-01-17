@@ -498,6 +498,7 @@ _import_structure = {
         "GroupViTTextConfig",
         "GroupViTVisionConfig",
     ],
+    "models.helium": ["HeliumConfig"],
     "models.herbert": ["HerbertTokenizer"],
     "models.hiera": ["HieraConfig"],
     "models.hubert": ["HubertConfig"],
@@ -1378,7 +1379,6 @@ else:
             "LogitNormalization",
             "LogitsProcessor",
             "LogitsProcessorList",
-            "LogitsWarper",
             "MaxLengthCriteria",
             "MaxTimeCriteria",
             "MinLengthLogitsProcessor",
@@ -2506,6 +2506,15 @@ else:
             "GroupViTPreTrainedModel",
             "GroupViTTextModel",
             "GroupViTVisionModel",
+        ]
+    )
+    _import_structure["models.helium"].extend(
+        [
+            "HeliumForCausalLM",
+            "HeliumForSequenceClassification",
+            "HeliumForTokenClassification",
+            "HeliumModel",
+            "HeliumPreTrainedModel",
         ]
     )
     _import_structure["models.hiera"].extend(
@@ -5546,6 +5555,7 @@ if TYPE_CHECKING:
         GroupViTTextConfig,
         GroupViTVisionConfig,
     )
+    from .models.helium import HeliumConfig
     from .models.herbert import HerbertTokenizer
     from .models.hiera import HieraConfig
     from .models.hubert import HubertConfig
@@ -6469,7 +6479,6 @@ if TYPE_CHECKING:
             LogitNormalization,
             LogitsProcessor,
             LogitsProcessorList,
-            LogitsWarper,
             MaxLengthCriteria,
             MaxTimeCriteria,
             MinLengthLogitsProcessor,
@@ -7390,6 +7399,13 @@ if TYPE_CHECKING:
             GroupViTPreTrainedModel,
             GroupViTTextModel,
             GroupViTVisionModel,
+        )
+        from .models.helium import (
+            HeliumForCausalLM,
+            HeliumForSequenceClassification,
+            HeliumForTokenClassification,
+            HeliumModel,
+            HeliumPreTrainedModel,
         )
         from .models.hiera import (
             HieraBackbone,
