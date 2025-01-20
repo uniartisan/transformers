@@ -64,8 +64,7 @@ class HybridCache(DynamicCache):
         key_cache_count = sum(len(cache) for cache in self.key_cache)
         value_cache_count = sum(len(cache) for cache in self.value_cache)
         count_info = rwkv_layers + \
-            f", key_cache_count={key_cache_count}, value_cache_count={
-                value_cache_count}"
+            f", key_cache_count={key_cache_count}, value_cache_count={value_cache_count}"
         memories = 0
         seq_length = self.get_seq_length()
         for cache in self.value_cache:
@@ -74,8 +73,7 @@ class HybridCache(DynamicCache):
                     memories += data.time_mix_state.wkv_state.numel()
                 else:
                     memories += data.numel()
-        count_info += f", memories={memories /
-                                    1024/1024}MB, seq_length={seq_length}"
+        count_info += f", memories={memories / 1024/1024}MB, seq_length={seq_length}"
         return count_info
 
     def update(self,

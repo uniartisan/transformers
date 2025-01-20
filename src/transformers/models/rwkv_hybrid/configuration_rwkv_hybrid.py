@@ -166,6 +166,7 @@ class RwkvHybridConfig(PretrainedConfig):
         wkv_version: int = 7,
         wkv_has_gate: bool = False,
         wkv_has_group_norm: bool = True,
+        wkv_use_vfirst: bool = True,
         wkv_layers: Optional[Union[str, List[int]]] = None,
         **kwargs,
     ):
@@ -175,6 +176,7 @@ class RwkvHybridConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_wkv_heads = hidden_size // head_size
+        assert hidden_size % head_size == 0, "hidden_size must be divisible by head_size"
         self.num_attention_heads = num_attention_heads
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window if use_sliding_window else None
@@ -182,10 +184,19 @@ class RwkvHybridConfig(PretrainedConfig):
         self.head_size = head_size
         self.head_size_divisor = head_size_divisor
         self.wkv_version = wkv_version
-        if self.wkv_version != 7:
-            raise NotImplementedError
+
         self.wkv_has_gate = wkv_has_gate
         self.wkv_has_group_norm = wkv_has_group_norm
+        self.wkv_use_vfirst = wkv_use_vfirst
+
+        if self.wkv_version == 7:
+            assert self.wkv_use_vfirst, "wkv_use_vfirst must be True for wkv_version 7"
+        elif self.wkv_version == 6:
+            assert self.wkv_has_gate, "wkv_has_gate must be True for wkv_version 6"
+            assert not self.wkv_use_vfirst, "wkv_use_vfirst must be False for wkv_version 6"
+        else:
+            raise NotImplementedError(f"Unsupported wkv_version: {self.wkv_version}, \
+                                        wkv_version must be 6 or 7")
 
         if wkv_layers == "full" or wkv_layers == None:
             self.wkv_layers = list(range(num_hidden_layers))

@@ -25,7 +25,7 @@ from ...utils import (
 )
 
 import threading
-from .wkv import Rwkv7Attention
+from .wkv import Rwkv7Attention, Rwkv6Attention
 from .configuration_rwkv_hybrid import RwkvHybridConfig
 
 from ..qwen2.modeling_qwen2 import (Qwen2MLP, 
@@ -43,10 +43,17 @@ class RwkvHybridDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
 
         self.is_rwkv = True if layer_idx in config.wkv_layers else False
-        if self.is_rwkv and config.wkv_version == 7:
-            self.self_attn = Rwkv7Attention(args=config, layer_id=layer_idx,
-                                            update_v_first=update_v_first,
-                                            get_v_first=get_v_first)
+        if self.is_rwkv:
+            if config.wkv_version == 7:
+                self.self_attn = Rwkv7Attention(args=config, layer_id=layer_idx,
+                                                update_v_first=update_v_first,
+                                                get_v_first=get_v_first)
+            elif config.wkv_version == 6:
+                self.self_attn = Rwkv6Attention(args=config, layer_id=layer_idx,
+                                                update_v_first=update_v_first,
+                                                get_v_first=get_v_first)
+            else:
+                raise NotImplementedError
         elif not self.is_rwkv:
             self.self_attn = Qwen2Attention(config=config, layer_idx=layer_idx)
         else:
