@@ -203,7 +203,7 @@ class Rwkv_Tmix_x070(nn.Module):
         else:
             o, state = fused_recurrent_rwkv7(r, k, v, w, a, b,
                 scale=1.0, initial_state=s, output_final_state=True, use_log_w=False,
-                head_first=True, training=False,
+                head_first=True,
             )
         
         x = rearrange(o, "b h l d -> b l (h d)")
