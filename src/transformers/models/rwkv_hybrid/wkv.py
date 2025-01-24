@@ -188,21 +188,22 @@ class Rwkv_Tmix_x070(nn.Module):
         w = rearrange(w, "b l (h d) -> b h l d", h=self.n_head)
         a = rearrange(a, "b l (h d) -> b h l d", h=self.n_head)
         b = rearrange(b, "b l (h d) -> b h l d", h=self.n_head)
+
         if r.device == "cpu":
             o, state = native_recurrent_rwkv7(r, k, v, w, a, b,
                 scale=1.0, initial_state=s.transpose(-1, -2), output_final_state=True, use_log_w=False,
                 head_first=True,
             )
             state = state.transpose(-1, -2)
-        elif r.shape[1] == 1:
-            o, state = fused_recurrent_rwkv7(r, k, v, w, a, b,
+        elif self.training:
+            o, state = chunk_rwkv7(r, k, v, w, a, b,
                 scale=1.0, initial_state=s, output_final_state=True, use_log_w=False,
                 head_first=True,
             )
         else:
-            o, state = chunk_rwkv7(r, k, v, w, a, b,
+            o, state = fused_recurrent_rwkv7(r, k, v, w, a, b,
                 scale=1.0, initial_state=s, output_final_state=True, use_log_w=False,
-                head_first=True,
+                head_first=True, training=False,
             )
         
         x = rearrange(o, "b h l d -> b l (h d)")
@@ -429,7 +430,7 @@ class Rwkv_Tmix_x060(nn.Module):
         x = self.output(x * g)
         return x, TimeMixState(lx, wkv_state)
 
-    def apply_wkv6_state(sefl, B, T, C, H, r, k, v, w, u, s):
+    def apply_wkv6_state(self, B, T, C, H, r, k, v, w, u, s):
         r = rearrange(r, "b l (h d) -> b h l d", h=H)
         k = rearrange(k, "b l (h d) -> b h l d", h=H)
         v = rearrange(v, "b l (h d) -> b h l d", h=H)
@@ -437,10 +438,10 @@ class Rwkv_Tmix_x060(nn.Module):
 
         if r.device == "cpu":
             wkv6_func = native_recurrent_rwkv6 
-        elif T == 1:
-            wkv6_func = fused_recurrent_rwkv6
-        else:
+        elif self.training:
             wkv6_func = chunk_rwkv6
+        else:
+            wkv6_func = fused_recurrent_rwkv6
 
         o, state = wkv6_func(
             r,

@@ -92,7 +92,6 @@ def rwkv6_linear_attention(
     time_first,
     state,
 ):
-    one_token = key.size(1) == 1
     batch, seq_length, _ = receptance.shape
     num_heads, head_size = time_first.shape
     # pylint: disable=line-too-long
@@ -107,12 +106,12 @@ def rwkv6_linear_attention(
         out, state = native_recurrent_rwkv6(
             receptance, key, value, time_decay, time_first, scale=1.0, initial_state=state, output_final_state=True
         )
-    elif one_token:
-        out, state = fused_recurrent_rwkv6(
+    elif training:
+        out, state = chunk_rwkv6(
             receptance, key, value, time_decay, time_first, scale=1.0, initial_state=state, output_final_state=True
         )
     else:
-        out, state = chunk_rwkv6(
+        out, state = fused_recurrent_rwkv6(
             receptance, key, value, time_decay, time_first, scale=1.0, initial_state=state, output_final_state=True
         )
     return out.transpose(1, 2), state
