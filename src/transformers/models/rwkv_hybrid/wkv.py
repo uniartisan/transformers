@@ -189,23 +189,50 @@ class Rwkv_Tmix_x070(nn.Module):
         a = rearrange(a, "b l (h d) -> b h l d", h=self.n_head)
         b = rearrange(b, "b l (h d) -> b h l d", h=self.n_head)
 
-        if r.device == "cpu":
-            o, state = native_recurrent_rwkv7(r, k, v, w, a, b,
-                scale=1.0, initial_state=s.transpose(-1, -2), output_final_state=True, use_log_w=False,
+        if r.device.type == "cpu":
+            o, state = native_recurrent_rwkv7(
+                r,
+                k,
+                v,
+                w,
+                a,
+                b,
+                scale=1.0,
+                initial_state=s.transpose(-1, -2),
+                output_final_state=True,
+                use_log_w=False,
                 head_first=True,
             )
             state = state.transpose(-1, -2)
         elif self.training:
-            o, state = chunk_rwkv7(r, k, v, w, a, b,
-                scale=1.0, initial_state=s, output_final_state=True, use_log_w=False,
+            o, state = chunk_rwkv7(
+                r,
+                k,
+                v,
+                w,
+                a,
+                b,
+                scale=1.0,
+                initial_state=s,
+                output_final_state=True,
+                use_log_w=False,
                 head_first=True,
             )
         else:
-            o, state = fused_recurrent_rwkv7(r, k, v, w, a, b,
-                scale=1.0, initial_state=s, output_final_state=True, use_log_w=False,
+            o, state = fused_recurrent_rwkv7(
+                r,
+                k,
+                v,
+                w,
+                a,
+                b,
+                scale=1.0,
+                initial_state=s,
+                output_final_state=True,
+                use_log_w=False,
                 head_first=True,
             )
-        
+
         x = rearrange(o, "b h l d -> b l (h d)")
         return x, state
 
@@ -280,30 +307,37 @@ class Rwkv7Attention(nn.Module):
 
     def forward(self, hidden_states, past_key_value, **kwargs):
         attn_output = hidden_states
-        B, T, C = attn_output.size()
-        if past_key_value is not None:
-            if len(past_key_value) <= self.layer_idx:
-                last_state = None
-            else:
-                last_state = past_key_value[self.layer_idx][0]
-        if last_state is None:
-            wkv_states = torch.zeros(
-                (B, self.args.num_wkv_heads, self.args.head_size, self.args.head_size),
-                device=attn_output.device,
-                dtype=torch.float32,
+        batch_size, token_length, _ = attn_output.size()
+
+        if past_key_value is not None and len(past_key_value) > self.layer_idx:
+            last_state = past_key_value[self.layer_idx][0]
+        else:
+            last_state = self.init_state(
+                batch_size, attn_output.device, attn_output.dtype
             )
-            token_shift = torch.zeros(
-                (B, C), device=attn_output.device, dtype=attn_output.dtype
-            )
-            time_state = TimeMixState(token_shift, wkv_states)
-            channel_state = None
-            last_state = BlockState(time_state, channel_state)
+
         attn_output, states = self.time_mixer(attn_output, last_state.time_mix_state)
         last_state.time_mix_state = states
 
         if past_key_value is not None:
-            past_key_value.update(T, last_state, self.layer_idx)
+            past_key_value.update(token_length, last_state, self.layer_idx)
         return attn_output, None
+
+    def init_state(self, batch_size, device, dtype) -> BlockState:
+        wkv_states = torch.zeros(
+            (
+                batch_size,
+                self.args.num_wkv_heads,
+                self.args.head_size,
+                self.args.head_size,
+            ),
+            device=device,
+            dtype=torch.float32,
+        )
+        token_shift = torch.zeros(
+            (batch_size, self.args.hidden_size), device=device, dtype=dtype
+        )
+        return BlockState(TimeMixState(token_shift, wkv_states), None)
 
 
 class Rwkv_Tmix_x060(nn.Module):
@@ -436,8 +470,8 @@ class Rwkv_Tmix_x060(nn.Module):
         v = rearrange(v, "b l (h d) -> b h l d", h=H)
         w = rearrange(w, "b l (h d) -> b h l d", h=H)
 
-        if r.device == "cpu":
-            wkv6_func = native_recurrent_rwkv6 
+        if r.device.type == "cpu":
+            wkv6_func = native_recurrent_rwkv6
         elif self.training:
             wkv6_func = chunk_rwkv6
         else:
