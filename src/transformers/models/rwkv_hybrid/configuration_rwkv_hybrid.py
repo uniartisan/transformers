@@ -1,4 +1,5 @@
 # coding=utf-8
+# Copyright 2025 RWKV team. All rights reserved.
 # Copyright 2024 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Qwen2 model configuration"""
+"""RwkvHybrid model configuration"""
 
 from ...configuration_utils import PretrainedConfig
 from ...modeling_rope_utils import rope_config_validation
@@ -25,10 +26,10 @@ logger = logging.get_logger(__name__)
 
 class RwkvHybridConfig(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`Qwen2Model`]. It is used to instantiate a
-    Qwen2 model according to the specified arguments, defining the model architecture. Instantiating a configuration
+    This is the configuration class to store the configuration of a [`RwkvHybridModel`]. It is used to instantiate a
+    RwkvHybrid model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of
-    Qwen2-7B-beta [Qwen/Qwen2-7B-beta](https://huggingface.co/Qwen/Qwen2-7B-beta).
+    RwkvHybrid-7B-beta.
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
@@ -36,8 +37,8 @@ class RwkvHybridConfig(PretrainedConfig):
 
     Args:
         vocab_size (`int`, *optional*, defaults to 151936):
-            Vocabulary size of the Qwen2 model. Defines the number of different tokens that can be represented by the
-            `inputs_ids` passed when calling [`Qwen2Model`]
+            Vocabulary size of the RwkvHybrid model. Defines the number of different tokens that can be represented by the
+            `inputs_ids` passed when calling [`RwkvHybridModel`]
         hidden_size (`int`, *optional*, defaults to 4096):
             Dimension of the hidden representations.
         intermediate_size (`int`, *optional*, defaults to 22016):
@@ -113,15 +114,34 @@ class RwkvHybridConfig(PretrainedConfig):
             The number of layers that use SWA (Sliding Window Attention). The bottom layers use SWA while the top use full attention.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for the attention probabilities.
+        head_size (`int`, *optional*, defaults to 64):
+            Dimensionality of each RWKV attention head. Defines the hidden dimension size for RWKV attention mechanisms.
+        head_size_divisor (`int`, *optional*, defaults to 8):
+            Constraint for head_size initialization, typically set to the square root of head_size. Ensures divisibility
+            between hidden_size and head_size.
+        wkv_version (`int`, *optional*, defaults to 7):
+            Version of RWKV attention implementation. Currently supports:
+            - 6: Original implementation requiring `wkv_has_gate=True` and `wkv_use_vfirst=False`
+            - 7: Improved version requiring `wkv_use_vfirst=True`
+        wkv_has_gate (`bool`, *optional*, defaults to False):
+            Whether to include gating mechanism in RWKV attention. Required for version 6.
+        wkv_has_group_norm (`bool`, *optional*, defaults to True):
+            Whether to apply group normalization in RWKV attention layers.
+        wkv_use_vfirst (`bool`, *optional*, defaults to True):
+            Whether to prioritize value projection in RWKV attention computation. Required for version 7.
+        wkv_layers (`Union[str, List[int]]`, *optional*, defaults to None):
+            Specifies which layers use RWKV attention:
+            - `"full"` or `None`: All layers use RWKV
+            - List of integers: Only specified layers (e.g., `[0,1,2]`) use RWKV attention
 
     ```python
-    >>> from transformers import Qwen2Model, Qwen2Config
+    >>> from transformers import RwkvHybridModel, RwkvHybridConfig
 
-    >>> # Initializing a Qwen2 style configuration
-    >>> configuration = Qwen2Config()
+    >>> # Initializing a RwkvHybrid style configuration
+    >>> configuration = RwkvHybridConfig()
 
-    >>> # Initializing a model from the Qwen2-7B style configuration
-    >>> model = Qwen2Model(configuration)
+    >>> # Initializing a model from the RwkvHybrid-7B style configuration
+    >>> model = RwkvHybridModel(configuration)
 
     >>> # Accessing the model configuration
     >>> configuration = model.config
@@ -130,7 +150,7 @@ class RwkvHybridConfig(PretrainedConfig):
     model_type = "rwkv_hybrid"
     keys_to_ignore_at_inference = ["past_key_values"]
 
-    # Default tensor parallel plan for base model `Qwen2`
+    # Default tensor parallel plan for base model `RwkvHybrid`
     base_model_tp_plan = {
         "layers.*.self_attn.q_proj": "colwise",
         "layers.*.self_attn.k_proj": "colwise",

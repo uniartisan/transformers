@@ -1,7 +1,7 @@
 import torch
 from einops import rearrange
 
-from .utilities import TimeMixState, BlockState
+from .hybrid_cache import TimeMixState, BlockState
 import math
 import torch.nn as nn
 from torch.nn import functional as F
@@ -73,12 +73,10 @@ class Rwkv_Tmix_x070(nn.Module):
             self.g1 = nn.Parameter(torch.Tensor(args.hidden_size, D_GATE_LORA))
             self.g2 = nn.Parameter(torch.Tensor(D_GATE_LORA, args.hidden_size))
 
-        # 其他参数
         self.k_k = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
         self.k_a = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
         self.r_k = nn.Parameter(torch.Tensor(H, N))
 
-        # 层定义
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
         self.receptance = nn.Linear(args.hidden_size, args.hidden_size, bias=False)
         self.key = nn.Linear(args.hidden_size, args.hidden_size, bias=False)
@@ -97,12 +95,10 @@ class Rwkv_Tmix_x070(nn.Module):
                 self.layer_id / self.args.num_hidden_layers
             )  # 1 to ~0
 
-            # 初始化 ddd
             ddd = torch.ones(1, 1, self.args.hidden_size)
             for i in range(self.args.hidden_size):
                 ddd[0, 0, i] = i / self.args.hidden_size
 
-            # 使用 nn.init 初始化 x_r, x_w, x_k, x_v, x_a, x_g
             nn.init.constant_(self.x_r, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
             nn.init.constant_(self.x_w, 1.0 - torch.pow(ddd, 0.9 * ratio_1_to_almost0))
             nn.init.constant_(

@@ -6,7 +6,7 @@ from transformers.cache_utils import Cache
 
 from ...activations import ACT2FN
 from ...cache_utils import Cache, StaticCache
-from .utilities import HybridCache
+from .hybrid_cache import HybridCache
 from ...generation import GenerationMixin
 from ...modeling_attn_mask_utils import AttentionMaskConverter
 from ...modeling_flash_attention_utils import FlashAttentionKwargs
@@ -576,10 +576,10 @@ class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
         Example:
 
         ```python
-        >>> from transformers import AutoTokenizer, Qwen2ForCausalLM
+        >>> from transformers import AutoTokenizer, RwkvHybridForCausalLM
 
-        >>> model = Qwen2ForCausalLM.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
-        >>> tokenizer = AutoTokenizer.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
+        >>> model = Qwen2ForCausalLM.from_pretrained("tbd")
+        >>> tokenizer = AutoTokenizer.from_pretrained("tbd")
 
         >>> prompt = "Hey, are you conscious? Can you talk to me?"
         >>> inputs = tokenizer(prompt, return_tensors="pt")
