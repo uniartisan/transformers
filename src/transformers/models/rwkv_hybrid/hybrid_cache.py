@@ -1,6 +1,6 @@
 import torch
 from typing import Any, Dict, Optional, Union
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import DynamicCache
 
 
 class TimeMixState:

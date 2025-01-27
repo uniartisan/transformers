@@ -1,3 +1,4 @@
+# Copyright 2025 RWKV team. All rights reserved.
 # Copyright 2024 The Qwen Team and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
