@@ -52,8 +52,7 @@ class Rwkv_Tmix_x070(nn.Module):
         self.x_k = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
         self.x_v = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
         self.x_a = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
-        self.x_g = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
-
+        
         D_DECAY_LORA = 64
         D_AAA_LORA = 64
         D_MV_LORA = 32
@@ -72,6 +71,7 @@ class Rwkv_Tmix_x070(nn.Module):
         self.v0 = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
 
         if self.args.wkv_has_gate:
+            self.x_g = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
             self.g1 = nn.Parameter(torch.Tensor(args.hidden_size, D_GATE_LORA))
             self.g2 = nn.Parameter(torch.Tensor(D_GATE_LORA, args.hidden_size))
 
@@ -119,8 +119,7 @@ class Rwkv_Tmix_x070(nn.Module):
             )
             nn.init.constant_(
                 self.x_a, 1.0 - torch.pow(ddd, 0.9 * ratio_1_to_almost0))
-            nn.init.constant_(
-                self.x_g, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
+            
 
             def ortho_init(x, scale):
                 shape = x.shape
@@ -178,6 +177,8 @@ class Rwkv_Tmix_x070(nn.Module):
                     ortho_init(torch.zeros(
                         D_GATE_LORA, self.args.hidden_size), 0.1)
                 )
+                nn.init.constant_(
+                self.x_g, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
 
             nn.init.constant_(self.k_k, 0.85)
             nn.init.constant_(self.k_a, 1.0)
@@ -255,12 +256,12 @@ class Rwkv_Tmix_x070(nn.Module):
 
         lx = hidden_states[:, -1]
 
-        xr = hidden_states + xx * self.x_r
-        xw = hidden_states + xx * self.x_w
-        xk = hidden_states + xx * self.x_k
-        xv = hidden_states + xx * self.x_v
-        xa = hidden_states + xx * self.x_a
-        xg = hidden_states + xx * self.x_g
+
+        xr = torch.addcmul(hidden_states, xx, self.x_r)
+        xw = torch.addcmul(hidden_states, xx, self.x_w)
+        xk = torch.addcmul(hidden_states, xx, self.x_k)
+        xv = torch.addcmul(hidden_states, xx, self.x_v)
+        xa = torch.addcmul(hidden_states, xx, self.x_a)
 
         r = self.receptance(xr)
         w = (
@@ -280,6 +281,7 @@ class Rwkv_Tmix_x070(nn.Module):
             self.a0 + (xa @ self.a1) @ self.a2
         )  # a is "in-context learning rate"
         if self.args.wkv_has_gate:
+            xg = torch.addcmul(hidden_states, xx, self.x_g)
             g = torch.sigmoid(xg @ self.g1) @ self.g2
         kk = k * self.k_k
         kk = F.normalize(kk.view(B, T, self.n_head, -1), dim=-1, p=2.0).view(B, T, C)
