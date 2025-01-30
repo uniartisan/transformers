@@ -577,8 +577,8 @@ class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
         ```python
         >>> from transformers import AutoTokenizer, RwkvHybridForCausalLM
 
-        >>> model = Qwen2ForCausalLM.from_pretrained("tbd")
-        >>> tokenizer = AutoTokenizer.from_pretrained("tbd")
+        >>> model = Qwen2ForCausalLM.from_pretrained("RWKV-Red-Team/ARWKV-7B-Preview-0.1")
+        >>> tokenizer = AutoTokenizer.from_pretrained("RWKV-Red-Team/ARWKV-7B-Preview-0.1")
 
         >>> prompt = "Hey, are you conscious? Can you talk to me?"
         >>> inputs = tokenizer(prompt, return_tensors="pt")
