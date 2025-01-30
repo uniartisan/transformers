@@ -69,7 +69,7 @@ class RwkvHybridDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        sequence_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Cache] = None,
         output_attentions: Optional[bool] = False,
@@ -85,7 +85,7 @@ class RwkvHybridDecoderLayer(nn.Module):
         # RWKV attention
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
-            attention_mask=attention_mask,
+            sequence_mask=sequence_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
@@ -352,6 +352,7 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
                     use_cache,
                     cache_position,
                     position_embeddings,
+                    attention_mask,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -363,6 +364,7 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
+                    sequence_mask=attention_mask,
                     **flash_attn_kwargs,
                 )
 

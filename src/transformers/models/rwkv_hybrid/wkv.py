@@ -199,12 +199,7 @@ class Rwkv_Tmix_x070(nn.Module):
                          ):
 
         if r.device.type == "cpu":
-            r = rearrange(r, "b l (h d) -> b h l d", h=self.n_head)
-            k = rearrange(k, "b l (h d) -> b h l d", h=self.n_head)
-            v = rearrange(v, "b l (h d) -> b h l d", h=self.n_head)
-            w = rearrange(w, "b l (h d) -> b h l d", h=self.n_head)
-            a = rearrange(a, "b l (h d) -> b h l d", h=self.n_head)
-            b = rearrange(b, "b l (h d) -> b h l d", h=self.n_head)
+            r, w, k, v, a, b = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.n_head), (r, w, k, v, a, b))
             o, state = native_recurrent_rwkv7(
                 r,
                 k,
@@ -221,8 +216,9 @@ class Rwkv_Tmix_x070(nn.Module):
             state = state.transpose(-1, -2)
             x = rearrange(o, "b h l d -> b l (h d)")
         else:
+            r, w, k, v, a, b = map(lambda x: rearrange(x, 'b l (h d) -> b l h d', h=self.n_head), (r, w, k, v, a, b))
             wkv7_func = chunk_rwkv7 if self.training else fused_recurrent_rwkv7
-            x, state = wkv7_func(
+            o, state = wkv7_func(
                 r, k, v, w,
                 a, b,
                 scale=1.0,
@@ -232,29 +228,31 @@ class Rwkv_Tmix_x070(nn.Module):
                 cu_seqlens=cu_seqlens,
                 head_first=head_first,
             )
+            x = rearrange(o, "b l h d -> b l (h d)")
         return x, state
 
     def forward(
             self,
             hidden_states,
             last_state: TimeMixState,
-            attention_mask: Optional[torch.Tensor] = None,
+            sequence_mask: Optional[torch.Tensor] = None,
             use_cache: Optional[bool] = False,
             cu_seqlens: Optional[torch.Tensor] = None,
             **kwargs
     ):
-        if attention_mask is not None:
+        if sequence_mask is not None:
             hidden_states = hidden_states.mul(
-                attention_mask[:, -hidden_states.shape[-2]:, None])
+                sequence_mask[:, -hidden_states.shape[-2]:, None])
 
         shift_state = last_state.shift_state
         B, T, C = hidden_states.size()
-        H = self.n_head
+
         if shift_state is not None:
             xx = torch.concat((shift_state.unsqueeze(
                 1), hidden_states[:, :-1]), dim=1) - hidden_states
         else:
             xx = self.time_shift(hidden_states) - hidden_states
+
         lx = hidden_states[:, -1]
 
         xr = hidden_states + xx * self.x_r
@@ -284,7 +282,7 @@ class Rwkv_Tmix_x070(nn.Module):
         if self.args.wkv_has_gate:
             g = torch.sigmoid(xg @ self.g1) @ self.g2
         kk = k * self.k_k
-        kk = F.normalize(kk.view(B, T, H, -1), dim=-1, p=2.0).view(B, T, C)
+        kk = F.normalize(kk.view(B, T, self.n_head, -1), dim=-1, p=2.0).view(B, T, C)
         k = k * (1 + (a - 1) * self.k_a)
 
         wkv_state = last_state.wkv_state
@@ -304,10 +302,10 @@ class Rwkv_Tmix_x070(nn.Module):
             hidden_states = self.ln_x(
                 hidden_states.view(B * T, C)).view(B, T, C)
         hidden_states = hidden_states + (
-            (r.view(B, T, H, -1) * k.view(B, T, H, -1) * self.r_k).sum(
+            (r.view(B, T, self.n_head, -1) * k.view(B, T, self.n_head, -1) * self.r_k).sum(
                 dim=-1, keepdim=True
             )
-            * v.view(B, T, H, -1)
+            * v.view(B, T, self.n_head, -1)
         ).view(B, T, C)
         hidden_states = self.output(
             hidden_states * g) if self.args.wkv_has_gate else self.output(hidden_states)
@@ -325,14 +323,14 @@ class Rwkv7Attention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        sequence_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
         **kwargs
     ):
-        if attention_mask is not None:
-            assert len(attention_mask.shape) == 2, (
+        if sequence_mask is not None:
+            assert len(sequence_mask.shape) == 2, (
                 "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
                 "for padding purposes (0 indicating padding). "
                 "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
@@ -343,12 +341,12 @@ class Rwkv7Attention(nn.Module):
             last_state = past_key_value[self.layer_idx][0]
         else:
             last_state = self.init_state(
-                batch_size, attn_output.device, attn_output.dtype
+                batch_size, hidden_states.device, hidden_states.dtype
             )
 
-        attn_output, states = self.time_mixer(x=hidden_states,
+        attn_output, states = self.time_mixer(hidden_states=hidden_states,
                                               last_state=last_state.time_mix_state,
-                                              attention_mask=attention_mask,
+                                              sequence_mask=sequence_mask,
                                               use_cache=use_cache,
                                               **kwargs)
         last_state.time_mix_state = states
@@ -510,10 +508,7 @@ class Rwkv_Tmix_x060(nn.Module):
         return x, TimeMixState(lx, wkv_state)
 
     def apply_wkv6_state(self, B, T, C, H, r, k, v, w, u, s):
-        r = rearrange(r, "b l (h d) -> b h l d", h=H)
-        k = rearrange(k, "b l (h d) -> b h l d", h=H)
-        v = rearrange(v, "b l (h d) -> b h l d", h=H)
-        w = rearrange(w, "b l (h d) -> b h l d", h=H)
+        r, w, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.n_head), (r, w, k, v))
 
         if r.device.type == "cpu":
             wkv6_func = native_recurrent_rwkv6
