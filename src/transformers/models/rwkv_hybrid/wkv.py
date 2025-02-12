@@ -330,18 +330,9 @@ class Rwkv7Attention(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.Tensor] = None,
         position_embeddings: Optional[torch.Tensor] = None,
-        sequence_mask: Optional[torch.Tensor] = None,
         cu_seqlens: Optional[torch.Tensor] = None,
         **kwargs
     ):
-        if sequence_mask is not None:
-            assert len(sequence_mask.shape) == 2, (
-                "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
-                "for padding purposes (0 indicating padding). "
-                "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
-            )
-            hidden_states = hidden_states.mul(
-                sequence_mask[:, -hidden_states.shape[-2]:, None])
 
         batch_size, token_length, _ = hidden_states.shape
 
@@ -576,7 +567,6 @@ class Rwkv6Attention(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.Tensor] = None,
         position_embeddings: Optional[torch.Tensor] = None,
-        sequence_mask: Optional[torch.Tensor] = None,
         cu_seqlens: Optional[torch.Tensor] = None,
         **kwargs
     ):

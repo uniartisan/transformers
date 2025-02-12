@@ -84,6 +84,16 @@ class RwkvHybridDecoderLayer(nn.Module):
         cu_seqlens: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        
+        if sequence_mask is not None:
+            assert len(sequence_mask.shape) == 2, (
+                "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
+                "for padding purposes (0 indicating padding). "
+                "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
+            )
+            hidden_states = hidden_states.mul(
+                sequence_mask[:, -hidden_states.shape[-2]:, None])
+
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
@@ -92,7 +102,6 @@ class RwkvHybridDecoderLayer(nn.Module):
         if self.is_rwkv:
             hidden_states, self_attn_weights = self.self_attn(
                 hidden_states=hidden_states,
-                sequence_mask=sequence_mask,
                 position_ids=position_ids,
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
@@ -105,7 +114,7 @@ class RwkvHybridDecoderLayer(nn.Module):
         else:
             hidden_states, self_attn_weights = self.self_attn(
                 hidden_states=hidden_states,
-                sequence_mask=sequence_mask,
+                attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
