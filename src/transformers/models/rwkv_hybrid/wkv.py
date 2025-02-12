@@ -8,6 +8,7 @@ from torch.nn import functional as F
 from .configuration_rwkv_hybrid import RwkvHybridConfig
 from typing import TYPE_CHECKING, Optional
 from ...cache_utils import Cache
+import logging
 
 try:
     import triton
@@ -15,6 +16,7 @@ try:
         fused_recurrent_rwkv7,
         chunk_rwkv7,
         native_recurrent_rwkv7,
+        fused_addcmul_rwkv7,
     )  # pylint: disable=C0411
     from rwkvfla.ops.rwkv6 import (
         fused_recurrent_rwkv6,
@@ -24,22 +26,21 @@ try:
 except ImportError:
     from rwkvfla.ops.rwkv7 import native_recurrent_rwkv7  # pylint: disable=C0411
     from rwkvfla.ops.rwkv6 import native_recurrent_rwkv6
+    from rwkvfla.ops.rwkv7 import torch_addcmul_rwkv7
 
     fused_recurrent_rwkv7 = native_recurrent_rwkv7
     chunk_rwkv7 = native_recurrent_rwkv7
     chunk_rwkv6 = native_recurrent_rwkv6
     fused_recurrent_rwkv6 = native_recurrent_rwkv6
+    fused_addcmul_rwkv7 = torch_addcmul_rwkv7
 
 
 class Rwkv_Tmix_x070(nn.Module):
-    def __init__(self, args: RwkvHybridConfig, layer_id, update_v_first, get_v_first):
+    def __init__(self, args: RwkvHybridConfig, layer_id, **kwargs):
         super().__init__()
         self.args = args
         self.layer_id = layer_id
         self.hidden_size = args.hidden_size
-
-        self.update_v_first = update_v_first
-        self.get_v_first = get_v_first
 
         self.head_size = args.head_size
         self.n_head = args.num_wkv_heads
@@ -52,7 +53,7 @@ class Rwkv_Tmix_x070(nn.Module):
         self.x_k = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
         self.x_v = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
         self.x_a = nn.Parameter(torch.Tensor(1, 1, args.hidden_size))
-        
+
         D_DECAY_LORA = 64
         D_AAA_LORA = 64
         D_MV_LORA = 32
@@ -119,7 +120,6 @@ class Rwkv_Tmix_x070(nn.Module):
             )
             nn.init.constant_(
                 self.x_a, 1.0 - torch.pow(ddd, 0.9 * ratio_1_to_almost0))
-            
 
             def ortho_init(x, scale):
                 shape = x.shape
@@ -178,7 +178,7 @@ class Rwkv_Tmix_x070(nn.Module):
                         D_GATE_LORA, self.args.hidden_size), 0.1)
                 )
                 nn.init.constant_(
-                self.x_g, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
+                    self.x_g, 1.0 - torch.pow(ddd, 0.2 * ratio_1_to_almost0))
 
             nn.init.constant_(self.k_k, 0.85)
             nn.init.constant_(self.k_a, 1.0)
@@ -193,75 +193,64 @@ class Rwkv_Tmix_x070(nn.Module):
                 nn.init.ones_(self.ln_x.weight)
                 nn.init.zeros_(self.ln_x.bias)
 
-    def apply_wkv7_state(self, r, k, v, w, a, b, s,
-                         output_final_state,
-                         cu_seqlens,
-                         head_first
-                         ):
-
+    def apply_wkv7_state(
+        self, r, k, v, w, a, b, s,
+        output_final_state,
+        cu_seqlens
+    ):
         if r.device.type == "cpu":
-            r, w, k, v, a, b = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.n_head), (r, w, k, v, a, b))
+            r, w, k, v, a, b = map(lambda x: rearrange(
+                x, 'b l (h d) -> b h l d', h=self.n_head), (r, w, k, v, a, b))
             o, state = native_recurrent_rwkv7(
-                r,
-                k,
-                v,
-                w,
-                a,
-                b,
+                r=r, k=k, v=v, w=w,
+                a=a, b=b,
                 scale=1.0,
                 initial_state=s.transpose(-1, -2),
                 output_final_state=True,
-                use_log_w=False,
                 head_first=True,
             )
             state = state.transpose(-1, -2)
             x = rearrange(o, "b h l d -> b l (h d)")
         else:
-            r, w, k, v, a, b = map(lambda x: rearrange(x, 'b l (h d) -> b l h d', h=self.n_head), (r, w, k, v, a, b))
+            r, w, k, v, a, b = map(lambda x: rearrange(
+                x, 'b l (h d) -> b l h d', h=self.n_head), (r, w, k, v, a, b))
             wkv7_func = chunk_rwkv7 if self.training else fused_recurrent_rwkv7
             o, state = wkv7_func(
-                r, k, v, w,
-                a, b,
+                r=r, k=k, v=v, w=w,
+                a=a, b=b,
                 scale=1.0,
                 initial_state=s,
                 output_final_state=output_final_state,
-                use_log_w=False,
                 cu_seqlens=cu_seqlens,
-                head_first=head_first,
+                head_first=False,
             )
             x = rearrange(o, "b l h d -> b l (h d)")
         return x, state
 
+    @torch.compile
     def forward(
             self,
             hidden_states,
             last_state: TimeMixState,
-            sequence_mask: Optional[torch.Tensor] = None,
             use_cache: Optional[bool] = False,
             cu_seqlens: Optional[torch.Tensor] = None,
+            v_first: Optional[torch.Tensor] = None,
             **kwargs
     ):
-        if sequence_mask is not None:
-            hidden_states = hidden_states.mul(
-                sequence_mask[:, -hidden_states.shape[-2]:, None])
-
         shift_state = last_state.shift_state
         B, T, C = hidden_states.size()
 
-        if shift_state is not None:
-            xx = torch.concat((shift_state.unsqueeze(
-                1), hidden_states[:, :-1]), dim=1) - hidden_states
-        else:
-            xx = self.time_shift(hidden_states) - hidden_states
+        xx = torch.concat((shift_state.unsqueeze(
+            1), hidden_states[:, :-1]), dim=1) - hidden_states
 
         lx = hidden_states[:, -1]
 
-
-        xr = torch.addcmul(hidden_states, xx, self.x_r)
-        xw = torch.addcmul(hidden_states, xx, self.x_w)
-        xk = torch.addcmul(hidden_states, xx, self.x_k)
-        xv = torch.addcmul(hidden_states, xx, self.x_v)
-        xa = torch.addcmul(hidden_states, xx, self.x_a)
+        if self.args.wkv_has_gate:
+            xr, xw, xk, xv, xa, xg = fused_addcmul_rwkv7(
+                hidden_states, xx, self.x_r, self.x_w, self.x_k, self.x_v, self.x_a, self.x_g)
+        else:
+            xr, xw, xk, xv, xa, _ = fused_addcmul_rwkv7(
+                hidden_states, xx, self.x_r, self.x_w, self.x_k, self.x_v, self.x_a)
 
         r = self.receptance(xr)
         w = (
@@ -270,22 +259,21 @@ class Rwkv_Tmix_x070(nn.Module):
         k = self.key(xk)
         v = self.value(xv)
         if self.layer_id == 0:
-            self.update_v_first(v)
+            v_first = v
         else:
-            # Original implementation
-            v = v + (self.get_v_first().to(v.device) - v) * torch.sigmoid(
+            v = torch.lerp(v, v_first, torch.sigmoid(
                 self.v0 + (xv @ self.v1) @ self.v2
-            )  # add value residual
+            ))  # add value residual
 
         a = torch.sigmoid(
             self.a0 + (xa @ self.a1) @ self.a2
         )  # a is "in-context learning rate"
         if self.args.wkv_has_gate:
-            xg = torch.addcmul(hidden_states, xx, self.x_g)
             g = torch.sigmoid(xg @ self.g1) @ self.g2
         kk = k * self.k_k
-        kk = F.normalize(kk.view(B, T, self.n_head, -1), dim=-1, p=2.0).view(B, T, C)
-        k = k * (1 + (a - 1) * self.k_a)
+        kk = F.normalize(kk.view(B, T, self.n_head, -1),
+                         dim=-1, p=2.0).view(B, T, C)
+        k = torch.lerp(k, k * a, self.k_a)
 
         wkv_state = last_state.wkv_state
         hidden_states, wkv_state = self.apply_wkv7_state(
@@ -297,21 +285,21 @@ class Rwkv_Tmix_x070(nn.Module):
             (kk * a),
             s=wkv_state,
             output_final_state=use_cache,
-            cu_seqlens=cu_seqlens,
-            head_first=False
+            cu_seqlens=cu_seqlens
         )
         if self.args.wkv_has_group_norm:
             hidden_states = self.ln_x(
                 hidden_states.view(B * T, C)).view(B, T, C)
-        hidden_states = hidden_states + (
-            (r.view(B, T, self.n_head, -1) * k.view(B, T, self.n_head, -1) * self.r_k).sum(
-                dim=-1, keepdim=True
-            )
-            * v.view(B, T, self.n_head, -1)
-        ).view(B, T, C)
+        # sum_result = (r.view(B, T, self.n_head, -1) * k.view(B, T, self.n_head, -1) * self.r_k).sum(
+        #         dim=-1, keepdim=True
+        #     )
+        sum_result = torch.einsum('btij,btij,ij->btij', r.view(B, T, self.n_head, -1),
+                                  k.view(B, T, self.n_head, -1), self.r_k).sum(dim=-1, keepdim=True)
+        hidden_states = hidden_states + \
+            (sum_result * v.view(B, T, self.n_head, -1)).view(B, T, C)
         hidden_states = self.output(
             hidden_states * g) if self.args.wkv_has_gate else self.output(hidden_states)
-        return hidden_states, TimeMixState(lx, wkv_state)
+        return hidden_states, TimeMixState(lx, wkv_state), v_first
 
 
 class Rwkv7Attention(nn.Module):
@@ -319,16 +307,22 @@ class Rwkv7Attention(nn.Module):
         super().__init__()
         self.args = args
         self.layer_idx = layer_id
-        self.time_mixer = Rwkv_Tmix_x070(
-            args, layer_id, update_v_first, get_v_first)
+        self.time_mixer = Rwkv_Tmix_x070(args, layer_id)
+        self.update_v_first = update_v_first
+        self.get_v_first = get_v_first
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        sequence_mask: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
         past_key_value: Optional[Cache] = None,
-        use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.Tensor] = None,
+        position_embeddings: Optional[torch.Tensor] = None,
+        sequence_mask: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
         **kwargs
     ):
         if sequence_mask is not None:
@@ -337,6 +331,9 @@ class Rwkv7Attention(nn.Module):
                 "for padding purposes (0 indicating padding). "
                 "Arbitrary attention masks of shape [batch_size, seq_len, seq_len] are not allowed."
             )
+            hidden_states = hidden_states.mul(
+                sequence_mask[:, -hidden_states.shape[-2]:, None])
+
         batch_size, token_length, _ = hidden_states.shape
 
         if past_key_value is not None and len(past_key_value) > self.layer_idx:
@@ -346,14 +343,23 @@ class Rwkv7Attention(nn.Module):
                 batch_size, hidden_states.device, hidden_states.dtype
             )
 
-        attn_output, states = self.time_mixer(hidden_states=hidden_states,
-                                              last_state=last_state.time_mix_state,
-                                              sequence_mask=sequence_mask,
-                                              use_cache=use_cache,
-                                              **kwargs)
-        last_state.time_mix_state = states
+        if self.layer_idx == 0:
+            attn_output, states, v_first = self.time_mixer(hidden_states=hidden_states,
+                                                           last_state=last_state.time_mix_state,
+                                                           use_cache=use_cache,
+                                                           cu_seqlens=cu_seqlens,
+                                                           **kwargs)
+            self.update_v_first(v_first)
+        else:
+            attn_output, states, _ = self.time_mixer(hidden_states=hidden_states,
+                                                     last_state=last_state.time_mix_state,
+                                                     use_cache=use_cache,
+                                                     cu_seqlens=cu_seqlens,
+                                                     v_first=self.get_v_first().to(hidden_states.device),
+                                                     **kwargs)
 
         if past_key_value is not None:
+            last_state.time_mix_state = states
             past_key_value.update(token_length, last_state, self.layer_idx)
 
         return attn_output, None
@@ -369,10 +375,10 @@ class Rwkv7Attention(nn.Module):
             device=device,
             dtype=torch.float32,
         )
-        token_shift = torch.zeros(
+        shift_states = torch.zeros(
             (batch_size, self.args.hidden_size), device=device, dtype=dtype
         )
-        return BlockState(TimeMixState(token_shift, wkv_states), None)
+        return BlockState(TimeMixState(shift_states, wkv_states), None)
 
 
 class Rwkv_Tmix_x060(nn.Module):
@@ -470,27 +476,36 @@ class Rwkv_Tmix_x060(nn.Module):
     def post_init(self):
         pass
 
-    def forward(self, x, last_state: TimeMixState):
+    @torch.compile()
+    def forward(
+        self,
+        hidden_states,
+        last_state: TimeMixState,
+        use_cache: Optional[bool] = False,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        v_first: Optional[torch.Tensor] = None,
+        **kwargs
+    ):
         shift_state = last_state.shift_state
-        B, T, C = x.size()
+        B, T, C = hidden_states.size()
         H = self.n_head
-        if shift_state is not None:
-            xx = torch.concat((shift_state.unsqueeze(1), x[:, :-1]), dim=1) - x
-        else:
-            xx = self.time_shift(x) - x
-        lx = x[:, -1]
 
-        xxx = x + xx * self.time_maa_x
+        xx = torch.concat((shift_state.unsqueeze(
+            1), hidden_states[:, :-1]), dim=1) - hidden_states
+
+        lx = hidden_states[:, -1]
+
+        xxx = hidden_states + xx * self.time_maa_x
         xxx = torch.tanh(xxx @ self.time_maa_w1).view(B *
                                                       T, 5, -1).transpose(0, 1)
         xxx = torch.bmm(xxx, self.time_maa_w2).view(5, B, T, -1)
         mw, mk, mv, mr, mg = xxx.unbind(dim=0)
 
-        xw = x + xx * (self.time_maa_w + mw)
-        xk = x + xx * (self.time_maa_k + mk)
-        xv = x + xx * (self.time_maa_v + mv)
-        xr = x + xx * (self.time_maa_r + mr)
-        xg = x + xx * (self.time_maa_g + mg)
+        xw = hidden_states + xx * (self.time_maa_w + mw)
+        xk = hidden_states + xx * (self.time_maa_k + mk)
+        xv = hidden_states + xx * (self.time_maa_v + mv)
+        xr = hidden_states + xx * (self.time_maa_r + mr)
+        xg = hidden_states + xx * (self.time_maa_g + mg)
 
         r = self.receptance(xr)
         k = self.key(xk)
@@ -501,16 +516,18 @@ class Rwkv_Tmix_x060(nn.Module):
         w = self.time_decay + ww
 
         wkv_state = last_state.wkv_state
-        x, wkv_state = self.apply_wkv6_state(
+        hidden_states, wkv_state = self.apply_wkv6_state(
             B, T, C, H, r, k, v, w, u=self.time_faaaa, s=wkv_state
         )
         if self.args.wkv_has_group_norm:
-            x = self.ln_x(x.view(B * T, C)).view(B, T, C)
-        x = self.output(x * g)
-        return x, TimeMixState(lx, wkv_state)
+            hidden_states = self.ln_x(
+                hidden_states.view(B * T, C)).view(B, T, C)
+        hidden_states = self.output(hidden_states * g)
+        return hidden_states, TimeMixState(lx, wkv_state)
 
     def apply_wkv6_state(self, B, T, C, H, r, k, v, w, u, s):
-        r, w, k, v = map(lambda x: rearrange(x, 'b l (h d) -> b h l d', h=self.n_head), (r, w, k, v))
+        r, w, k, v = map(lambda x: rearrange(
+            x, 'b l (h d) -> b h l d', h=self.n_head), (r, w, k, v))
 
         if r.device.type == "cpu":
             wkv6_func = native_recurrent_rwkv6
@@ -540,7 +557,20 @@ class Rwkv6Attention(nn.Module):
         self.layer_idx = layer_id
         self.time_mixer = Rwkv_Tmix_x060(args, layer_id, **kwargs)
 
-    def forward(self, hidden_states, past_key_value, **kwargs):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Cache] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.Tensor] = None,
+        position_embeddings: Optional[torch.Tensor] = None,
+        sequence_mask: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        **kwargs
+    ):
         attn_output = hidden_states
         B, T, C = attn_output.size()
         if past_key_value is not None:

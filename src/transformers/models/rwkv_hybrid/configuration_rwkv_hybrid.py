@@ -224,9 +224,11 @@ class RwkvHybridConfig(PretrainedConfig):
             if all(isinstance(layer, int) for layer in wkv_layers):
                 self.wkv_layers = wkv_layers
             else:
-                raise ValueError("All elements in wkv_layers must be integers.")
+                raise ValueError(
+                    "All elements in wkv_layers must be integers.")
         else:
-            raise TypeError("wkv_layers must be either 'full', None, or a list of integers.")
+            raise TypeError(
+                "wkv_layers must be either 'full', None, or a list of integers.")
 
         # for backward compatibility
         if num_key_value_heads is None:

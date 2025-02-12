@@ -27,14 +27,15 @@ import threading
 from .wkv import Rwkv7Attention, Rwkv6Attention
 from .configuration_rwkv_hybrid import RwkvHybridConfig
 
-from ..qwen2.modeling_qwen2 import (Qwen2MLP, 
-                                    Qwen2RMSNorm, 
-                                    Qwen2RotaryEmbedding, 
+from ..qwen2.modeling_qwen2 import (Qwen2MLP,
+                                    Qwen2RMSNorm,
+                                    Qwen2RotaryEmbedding,
                                     Qwen2Attention)
 
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "RwkvHybridConfig"
+
 
 class RwkvHybridDecoderLayer(nn.Module):
     def __init__(self, config: RwkvHybridConfig, layer_idx: int, update_v_first, get_v_first):
@@ -63,19 +64,24 @@ class RwkvHybridDecoderLayer(nn.Module):
         self.input_layernorm = Qwen2RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps)   
+            config.hidden_size, eps=config.rms_norm_eps)
 
-    
     def forward(
         self,
         hidden_states: torch.Tensor,
-        sequence_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
         past_key_value: Optional[Cache] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        cache_position: Optional[torch.Tensor] = None,
+        position_embeddings: Optional[torch.Tensor] = None,
+        sequence_mask: Optional[torch.Tensor] = None,
+        cu_seq_lens_q: Optional[torch.LongTensor] = None,
+        cu_seq_lens_k: Optional[torch.LongTensor] = None,
+        max_length_q: Optional[int] = None,
+        max_length_k: Optional[int] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
@@ -83,16 +89,35 @@ class RwkvHybridDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # RWKV attention
-        hidden_states, self_attn_weights = self.self_attn(
-            hidden_states=hidden_states,
-            sequence_mask=sequence_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-        )
+        if self.is_rwkv:
+            hidden_states, self_attn_weights = self.self_attn(
+                hidden_states=hidden_states,
+                sequence_mask=sequence_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                **kwargs
+            )
+        else:
+            hidden_states, self_attn_weights = self.self_attn(
+                hidden_states=hidden_states,
+                sequence_mask=sequence_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                cu_seq_lens_q=cu_seq_lens_q,
+                cu_seq_lens_k=cu_seq_lens_k,
+                max_length_q=max_length_q,
+                max_length_k=max_length_k,
+                **kwargs
+            )
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -106,6 +131,7 @@ class RwkvHybridDecoderLayer(nn.Module):
             outputs += (self_attn_weights,)
 
         return outputs
+
 
 RWKV_HYBRID_START_DOCSTRING = r"""
     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
@@ -122,6 +148,7 @@ RWKV_HYBRID_START_DOCSTRING = r"""
             load the weights associated with the model, only the configuration. Check out the
             [`~PreTrainedModel.from_pretrained`] method to load the model weights.
 """
+
 
 @add_start_docstrings(
     "The bare RWKV Hybrid Model outputting raw hidden-states without any specific head on top.",
@@ -144,6 +171,7 @@ class RwkvHybridPreTrainedModel(PreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+
 
 RWKV_HYBRID_INPUTS_DOCSTRING = r"""
     Args:
@@ -237,11 +265,13 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size, config.hidden_size, self.padding_idx)
         self.thread_local = threading.local()
         self.thread_local.v_first = None
         self.layers = nn.ModuleList(
-            [RwkvHybridDecoderLayer(config, layer_idx, self.update_v_first, self.get_v_first) for layer_idx in range(config.num_hidden_layers)]
+            [RwkvHybridDecoderLayer(config, layer_idx, self.update_v_first, self.get_v_first)
+             for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen2RotaryEmbedding(config=config)
@@ -269,7 +299,7 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         """Callback function to update v_first in HybridModel."""
         self.thread_local.v_first = new_v_first
 
-    def get_v_first(self):
+    def get_v_first(self) -> torch.Tensor:
         return self.thread_local.v_first
 
     def get_input_embeddings(self):
@@ -291,7 +321,12 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
+        cu_seq_lens_q: Optional[torch.LongTensor] = None,
+        cu_seq_lens_k: Optional[torch.LongTensor] = None,
+        max_length_q: Optional[int] = None,
+        max_length_k: Optional[int] = None,
+        cu_seqlens: Optional[torch.LongTensor] = None,
+        **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -301,7 +336,8 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+            raise ValueError(
+                "You must specify exactly one of input_ids or inputs_embeds")
 
         if self.gradient_checkpointing and self.training and use_cache:
             logger.warning_once(
@@ -316,7 +352,8 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
             past_key_values = HybridCache()
 
         if cache_position is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            past_seen_tokens = past_key_values.get_seq_length(
+            ) if past_key_values is not None else 0
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
@@ -353,6 +390,11 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
                     cache_position,
                     position_embeddings,
                     attention_mask,
+                    cu_seq_lens_q,
+                    cu_seq_lens_k,
+                    max_length_q,
+                    max_length_k,
+                    cu_seqlens
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -365,7 +407,11 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                     sequence_mask=attention_mask,
-                    **flash_attn_kwargs,
+                    cu_seq_lens_q=cu_seq_lens_q,
+                    cu_seq_lens_k=cu_seq_lens_k,
+                    max_length_q=max_length_q,
+                    max_length_k=max_length_k,
+                    cu_seqlens=cu_seqlens,
                 )
 
             hidden_states = layer_outputs[0]
@@ -403,7 +449,8 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         # For SDPA, when possible, we will rely on its `is_causal` argument instead of its `attn_mask` argument, in
         # order to dispatch on Flash Attention 2. This feature is not compatible with static cache, as SDPA will fail
         # to infer the attention mask.
-        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+        past_seen_tokens = past_key_values.get_seq_length(
+        ) if past_key_values is not None else 0
         using_static_cache = isinstance(past_key_values, StaticCache)
 
         # When output attentions is True, sdpa implementation's forward method calls the eager implementation's forward
@@ -448,7 +495,8 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
             # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
             # Details: https://github.com/pytorch/pytorch/issues/110213
             min_dtype = torch.finfo(dtype).min
-            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
+            causal_mask = AttentionMaskConverter._unmask_unattended(
+                causal_mask, min_dtype)
 
         return causal_mask
 
@@ -491,16 +539,20 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         else:
             min_dtype = torch.finfo(dtype).min
             causal_mask = torch.full(
-                (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device
+                (sequence_length,
+                 target_length), fill_value=min_dtype, dtype=dtype, device=device
             )
             if sequence_length != 1:
                 causal_mask = torch.triu(causal_mask, diagonal=1)
-            causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-            causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
+            causal_mask *= torch.arange(target_length,
+                                        device=device) > cache_position.reshape(-1, 1)
+            causal_mask = causal_mask[None, None,
+                                      :, :].expand(batch_size, 1, -1, -1)
             if attention_mask is not None:
                 causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
                 mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
+                padding_mask = causal_mask[:, :, :,
+                                           :mask_length] + attention_mask[:, None, None, :]
                 padding_mask = padding_mask == 0
                 causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
                     padding_mask, min_dtype
@@ -509,7 +561,9 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         return causal_mask
 
 
-class KwargsForCausalLM(FlashAttentionKwargs, LossKwargs): ...
+class KwargsForCausalLM(FlashAttentionKwargs, LossKwargs):
+    ...
+
 
 class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
@@ -519,7 +573,8 @@ class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
         super().__init__(config)
         self.model = RwkvHybridModel(config)
         self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(
+            config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -549,7 +604,8 @@ class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        past_key_values: Optional[Union[Cache,
+                                        List[torch.FloatTensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
@@ -617,7 +673,8 @@ class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+            loss = self.loss_function(
+                logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
@@ -630,4 +687,3 @@ class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-
