@@ -34,6 +34,15 @@ except ImportError:
     fused_recurrent_rwkv6 = native_recurrent_rwkv6
     fused_addcmul_rwkv7 = torch_addcmul_rwkv7
 
+from rwkvfla.utils import check_pytorch_version
+
+if check_pytorch_version("2.6"):
+    compile_decorator = torch.compile
+    torch._dynamo.config.cache_size_limit = 512
+else:
+    def compile_decorator(func):
+        return func
+
 
 class Rwkv_Tmix_x070(nn.Module):
     def __init__(self, args: RwkvHybridConfig, layer_id, **kwargs):
@@ -227,7 +236,7 @@ class Rwkv_Tmix_x070(nn.Module):
             x = rearrange(o, "b l h d -> b l (h d)")
         return x, state
 
-    @torch.compile
+    @compile_decorator
     def forward(
             self,
             hidden_states,
@@ -476,7 +485,7 @@ class Rwkv_Tmix_x060(nn.Module):
     def post_init(self):
         pass
 
-    @torch.compile()
+    @compile_decorator
     def forward(
         self,
         hidden_states,
