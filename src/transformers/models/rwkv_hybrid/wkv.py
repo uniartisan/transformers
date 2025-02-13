@@ -281,7 +281,7 @@ class Rwkv_Tmix_x070(nn.Module):
             g = torch.sigmoid(xg @ self.g1) @ self.g2
         kk = k * self.k_k
         kk = F.normalize(kk.view(B, T, self.n_head, -1),
-                         dim=-1, p=2.0).view(B, T, C)
+                         p=2.0, dim=-1, eps=1e-4 if kk.dtype == torch.float16 else 1e-12).view(B, T, C)
         k = torch.lerp(k, k * a, self.k_a)
 
         wkv_state = last_state.wkv_state
