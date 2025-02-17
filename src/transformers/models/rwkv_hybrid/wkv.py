@@ -223,7 +223,7 @@ class Rwkv_Tmix_x070(nn.Module):
         else:
             r, w, k, v, a, b = map(lambda x: rearrange(
                 x, 'b l (h d) -> b l h d', h=self.n_head), (r, w, k, v, a, b))
-            wkv7_func = chunk_rwkv7 if self.training else fused_recurrent_rwkv7
+            wkv7_func = chunk_rwkv7 if r.shape[1] != 1 else fused_recurrent_rwkv7
             o, state = wkv7_func(
                 r=r, k=k, v=v, w=w,
                 a=a, b=b,
@@ -299,13 +299,15 @@ class Rwkv_Tmix_x070(nn.Module):
         if self.args.wkv_has_group_norm:
             hidden_states = self.ln_x(
                 hidden_states.view(B * T, C)).view(B, T, C)
-        # sum_result = (r.view(B, T, self.n_head, -1) * k.view(B, T, self.n_head, -1) * self.r_k).sum(
+
+        # original code:
+        # weighted_sum_rk = (r.view(B, T, self.n_head, -1) * k.view(B, T, self.n_head, -1) * self.r_k).sum(
         #         dim=-1, keepdim=True
         #     )
-        sum_result = torch.einsum('btij,btij,ij->btij', r.view(B, T, self.n_head, -1),
-                                  k.view(B, T, self.n_head, -1), self.r_k).sum(dim=-1, keepdim=True)
+        weighted_sum_rk = torch.einsum('btij,btij,ij->btij', r.view(B, T, self.n_head, -1),
+                                       k.view(B, T, self.n_head, -1), self.r_k).sum(dim=-1, keepdim=True)
         hidden_states = hidden_states + \
-            (sum_result * v.view(B, T, self.n_head, -1)).view(B, T, C)
+            (weighted_sum_rk * v.view(B, T, self.n_head, -1)).view(B, T, C)
         hidden_states = self.output(
             hidden_states * g) if self.args.wkv_has_gate else self.output(hidden_states)
         return hidden_states, TimeMixState(lx, wkv_state), v_first
