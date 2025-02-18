@@ -330,6 +330,7 @@ class Rwkv7Attention(nn.Module):
         cache_position: Optional[torch.Tensor] = None,
         position_embeddings: Optional[torch.Tensor] = None,
         cu_seqlens: Optional[torch.Tensor] = None,
+        v_first: Optional[torch.Tensor] = None,
         **kwargs
     ):
 
@@ -342,27 +343,18 @@ class Rwkv7Attention(nn.Module):
                 batch_size, hidden_states.device, hidden_states.dtype
             )
 
-        if self.layer_idx == 0:
-            attn_output, states, v_first = self.time_mixer(hidden_states=hidden_states,
-                                                           last_state=last_state.time_mix_state,
-                                                           use_cache=use_cache,
-                                                           cu_seqlens=cu_seqlens,
-                                                           **kwargs)
-            if use_cache:
-                past_key_value.update_v_first(v_first)
-        else:
-            attn_output, states, _ = self.time_mixer(hidden_states=hidden_states,
-                                                     last_state=last_state.time_mix_state,
-                                                     use_cache=use_cache,
-                                                     cu_seqlens=cu_seqlens,
-                                                     v_first=past_key_value.get_v_first(),
-                                                     **kwargs)
+        attn_output, states, v_first = self.time_mixer(hidden_states=hidden_states,
+                                                       last_state=last_state.time_mix_state,
+                                                       use_cache=use_cache,
+                                                       cu_seqlens=cu_seqlens,
+                                                       v_first=v_first,
+                                                       **kwargs)
 
         if use_cache:
             last_state.time_mix_state = states
             past_key_value.update(token_length, last_state, self.layer_idx)
 
-        return attn_output, None
+        return attn_output, None, v_first
 
     def init_state(self, batch_size, device, dtype) -> BlockState:
         wkv_states = torch.zeros(
@@ -565,6 +557,7 @@ class Rwkv6Attention(nn.Module):
         cache_position: Optional[torch.Tensor] = None,
         position_embeddings: Optional[torch.Tensor] = None,
         cu_seqlens: Optional[torch.Tensor] = None,
+        v_first: Optional[torch.Tensor] = None,
         **kwargs
     ):
         attn_output = hidden_states
@@ -593,4 +586,4 @@ class Rwkv6Attention(nn.Module):
 
         if use_cache:
             past_key_value.update(T, last_state, self.layer_idx)
-        return attn_output, None
+        return attn_output, None, None

@@ -52,17 +52,15 @@ class RwkvHybridDecoderLayer(nn.Module):
                     args=config, layer_id=layer_idx)
             else:
                 raise NotImplementedError
-        elif not self.is_rwkv:
-            self.self_attn = Qwen2Attention(config=config, layer_idx=layer_idx)
         else:
-            self.self_attn = None
-            raise NotImplementedError
+            self.self_attn = Qwen2Attention(config=config, layer_idx=layer_idx)
 
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps)
+        self.layer_idx = layer_idx
 
     def forward(
         self,
@@ -80,6 +78,7 @@ class RwkvHybridDecoderLayer(nn.Module):
         max_length_q: Optional[int] = None,
         max_length_k: Optional[int] = None,
         cu_seqlens: Optional[torch.LongTensor] = None,
+        v_first: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
@@ -98,7 +97,7 @@ class RwkvHybridDecoderLayer(nn.Module):
 
         # RWKV attention
         if self.is_rwkv:
-            hidden_states, self_attn_weights = self.self_attn(
+            hidden_states, self_attn_weights, v_first = self.self_attn(
                 hidden_states=hidden_states,
                 position_ids=position_ids,
                 past_key_value=past_key_value,
@@ -107,6 +106,7 @@ class RwkvHybridDecoderLayer(nn.Module):
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
+                v_first=v_first,
                 **kwargs
             )
         else:
@@ -136,6 +136,9 @@ class RwkvHybridDecoderLayer(nn.Module):
         outputs = (hidden_states,)
         if output_attentions:
             outputs += (self_attn_weights,)
+
+        if self.is_rwkv:
+            outputs += (v_first,)
 
         return outputs
 
@@ -308,6 +311,14 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
+    def get_v_first(self, layer_idx: int, use_cache: bool, past_key_value: HybridCache):
+        if layer_idx == 0:
+            return None
+
+        if use_cache:
+            return past_key_value.get_v_first()
+        return self.v_first
+
     @add_start_docstrings_to_model_forward(RWKV_HYBRID_INPUTS_DOCSTRING)
     def forward(
         self,
@@ -375,6 +386,7 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         all_self_attns = () if output_attentions else None
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+            first_rwkv_layer = True
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -394,7 +406,9 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
                     cu_seq_lens_k,
                     max_length_q,
                     max_length_k,
-                    cu_seqlens
+                    cu_seqlens,
+                    self.get_v_first(decoder_layer.layer_idx,
+                                     use_cache, past_key_values)
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -412,12 +426,22 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
                     max_length_q=max_length_q,
                     max_length_k=max_length_k,
                     cu_seqlens=cu_seqlens,
+                    v_first=self.get_v_first(
+                        decoder_layer.layer_idx, use_cache, past_key_values)
                 )
 
             hidden_states = layer_outputs[0]
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
+
+            if first_rwkv_layer == True and decoder_layer.is_rwkv:
+                v_first = layer_outputs[-1]
+                if use_cache:
+                    past_key_values.update_v_first(v_first)
+                else:
+                    self.register_buffer('v_first', v_first)
+                first_rwkv_layer = False
 
         hidden_states = self.norm(hidden_states)
 
@@ -668,14 +692,14 @@ class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
         )
 
         hidden_states = outputs[0]
-        # Only compute necessary logits, 
+        # Only compute necessary logits,
         # and do not upcast them to float if we are not computing the loss
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
 
         loss = None
         if labels is not None:
             loss = self.loss_function(
-                logits=logits, labels=labels, 
+                logits=logits, labels=labels,
                 vocab_size=self.config.vocab_size, **kwargs)
 
         if not return_dict:
