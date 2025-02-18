@@ -6,12 +6,11 @@ import math
 import torch.nn as nn
 from torch.nn import functional as F
 from .configuration_rwkv_hybrid import RwkvHybridConfig
-from typing import TYPE_CHECKING, Optional
-from ...cache_utils import Cache
-import logging
+from typing import Optional
+from .hybrid_cache import HybridCache
 
 try:
-    import triton
+    import triton  # pylint: disable=F401
     from rwkvfla.ops.rwkv7 import (
         fused_recurrent_rwkv7,
         chunk_rwkv7,
@@ -314,20 +313,18 @@ class Rwkv_Tmix_x070(nn.Module):
 
 
 class Rwkv7Attention(nn.Module):
-    def __init__(self, args: RwkvHybridConfig, layer_id, update_v_first, get_v_first):
+    def __init__(self, args: RwkvHybridConfig, layer_id):
         super().__init__()
         self.args = args
         self.layer_idx = layer_id
         self.time_mixer = Rwkv_Tmix_x070(args, layer_id)
-        self.update_v_first = update_v_first
-        self.get_v_first = get_v_first
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
-        past_key_value: Optional[Cache] = None,
+        past_key_value: Optional[HybridCache] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.Tensor] = None,
@@ -338,7 +335,7 @@ class Rwkv7Attention(nn.Module):
 
         batch_size, token_length, _ = hidden_states.shape
 
-        if past_key_value is not None and len(past_key_value) > self.layer_idx:
+        if use_cache and len(past_key_value) > self.layer_idx:
             last_state = past_key_value[self.layer_idx][0]
         else:
             last_state = self.init_state(
@@ -351,16 +348,17 @@ class Rwkv7Attention(nn.Module):
                                                            use_cache=use_cache,
                                                            cu_seqlens=cu_seqlens,
                                                            **kwargs)
-            self.update_v_first(v_first)
+            if use_cache:
+                past_key_value.update_v_first(v_first)
         else:
             attn_output, states, _ = self.time_mixer(hidden_states=hidden_states,
                                                      last_state=last_state.time_mix_state,
                                                      use_cache=use_cache,
                                                      cu_seqlens=cu_seqlens,
-                                                     v_first=self.get_v_first().to(hidden_states.device),
+                                                     v_first=past_key_value.get_v_first(),
                                                      **kwargs)
 
-        if past_key_value is not None:
+        if use_cache:
             last_state.time_mix_state = states
             past_key_value.update(token_length, last_state, self.layer_idx)
 
@@ -393,8 +391,6 @@ class Rwkv_Tmix_x060(nn.Module):
         self.head_size = args.head_size
         self.n_head = args.num_wkv_heads
         assert args.hidden_size % self.n_head == 0
-        H = self.n_head
-        N = self.head_size
 
         with torch.no_grad():
             ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
@@ -458,7 +454,6 @@ class Rwkv_Tmix_x060(nn.Module):
 
             self.time_faaaa = nn.Parameter(
                 tmp.reshape(self.n_head, self.head_size))
-            # self.time_state = nn.Parameter(torch.zeros(self.n_head, self.head_size, self.head_size))
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
         self.receptance = nn.Linear(
@@ -564,7 +559,7 @@ class Rwkv6Attention(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
-        past_key_value: Optional[Cache] = None,
+        past_key_value: Optional[HybridCache] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.Tensor] = None,
@@ -574,7 +569,7 @@ class Rwkv6Attention(nn.Module):
     ):
         attn_output = hidden_states
         B, T, C = attn_output.size()
-        if past_key_value is not None:
+        if use_cache:
             if len(past_key_value) <= self.layer_idx:
                 last_state = None
             else:
@@ -596,6 +591,6 @@ class Rwkv6Attention(nn.Module):
             attn_output, last_state.time_mix_state)
         last_state.time_mix_state = states
 
-        if past_key_value is not None:
+        if use_cache:
             past_key_value.update(T, last_state, self.layer_idx)
         return attn_output, None

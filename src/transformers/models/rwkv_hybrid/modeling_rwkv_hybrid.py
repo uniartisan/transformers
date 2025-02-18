@@ -38,20 +38,18 @@ _CONFIG_FOR_DOC = "RwkvHybridConfig"
 
 
 class RwkvHybridDecoderLayer(nn.Module):
-    def __init__(self, config: RwkvHybridConfig, layer_idx: int, update_v_first, get_v_first):
+    def __init__(self, config: RwkvHybridConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
 
         self.is_rwkv = True if layer_idx in config.wkv_layers else False
         if self.is_rwkv:
             if config.wkv_version == 7:
-                self.self_attn = Rwkv7Attention(args=config, layer_id=layer_idx,
-                                                update_v_first=update_v_first,
-                                                get_v_first=get_v_first)
+                self.self_attn = Rwkv7Attention(
+                    args=config, layer_id=layer_idx)
             elif config.wkv_version == 6:
-                self.self_attn = Rwkv6Attention(args=config, layer_id=layer_idx,
-                                                update_v_first=update_v_first,
-                                                get_v_first=get_v_first)
+                self.self_attn = Rwkv6Attention(
+                    args=config, layer_id=layer_idx)
             else:
                 raise NotImplementedError
         elif not self.is_rwkv:
@@ -84,7 +82,7 @@ class RwkvHybridDecoderLayer(nn.Module):
         cu_seqlens: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        
+
         if sequence_mask is not None:
             assert len(sequence_mask.shape) == 2, (
                 "Expected attention_mask as a 0-1 matrix with shape [batch_size, seq_len] "
@@ -279,7 +277,7 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         self.thread_local = threading.local()
         self.thread_local.v_first = None
         self.layers = nn.ModuleList(
-            [RwkvHybridDecoderLayer(config, layer_idx, self.update_v_first, self.get_v_first)
+            [RwkvHybridDecoderLayer(config, layer_idx)
              for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -303,13 +301,6 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
         if _init_weights:
             for layer in self.layers:
                 layer.self_attn.time_mixer.post_init()
-
-    def update_v_first(self, new_v_first):
-        """Callback function to update v_first in HybridModel."""
-        self.thread_local.v_first = new_v_first
-
-    def get_v_first(self) -> torch.Tensor:
-        return self.thread_local.v_first
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -677,13 +668,15 @@ class RwkvHybridForCausalLM(RwkvHybridPreTrainedModel, GenerationMixin):
         )
 
         hidden_states = outputs[0]
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        # Only compute necessary logits, 
+        # and do not upcast them to float if we are not computing the loss
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
 
         loss = None
         if labels is not None:
             loss = self.loss_function(
-                logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+                logits=logits, labels=labels, 
+                vocab_size=self.config.vocab_size, **kwargs)
 
         if not return_dict:
             output = (logits,) + outputs[1:]

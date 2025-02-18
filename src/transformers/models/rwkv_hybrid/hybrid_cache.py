@@ -13,6 +13,9 @@ class ChannelMixState:
     def __init__(self, shift_state: torch.Tensor):
         self.shift_state = shift_state
 
+class VfirstCache:
+    def __init__(self, v_first: torch.Tensor):
+        self.v_first = v_first
 
 class BlockState:
     def __init__(self, time_mix_state: TimeMixState,
@@ -29,9 +32,9 @@ class BlockStateList:
     @staticmethod
     def create(N, B, C, H, device, dtype):
         result = BlockStateList.empty(N, B, C, H, device, dtype)
-        result.wkv_states[:] = 0
-        result.wkv_states[:] = 0
-        result.shift_states[:] = 0
+        result.wkv_states[:] = 0.0
+        result.wkv_states[:] = 0.0
+        result.shift_states[:] = 0.0
         return result
 
     @staticmethod
@@ -58,6 +61,7 @@ class HybridCache(DynamicCache):
         super().__init__()
         self.rwkv_layers = set()
         self.key_cache_nums = 0
+        self.v_first_cache = None
 
     def update(
         self,
@@ -83,6 +87,12 @@ class HybridCache(DynamicCache):
             return key_states, value_states
 
         return super().update(key_states, value_states, layer_idx, cache_kwargs)
+
+    def update_v_first(self, v_first: torch.Tensor):
+        self.v_first_cache = v_first
+
+    def get_v_first(self):
+        return self.v_first_cache
 
     def get_seq_length(self, layer_idx: Optional[int] = 0):
         if layer_idx in self.rwkv_layers:
