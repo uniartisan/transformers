@@ -218,7 +218,7 @@ class RwkvHybridConfig(PretrainedConfig):
             raise NotImplementedError(f"Unsupported wkv_version: {self.wkv_version}, \
                                         wkv_version must be 6 or 7")
 
-        if wkv_layers == "full" or wkv_layers == None:
+        if wkv_layers == "full" or wkv_layers is None:
             self.wkv_layers = list(range(num_hidden_layers))
         elif isinstance(wkv_layers, list):
             if all(isinstance(layer, int) for layer in wkv_layers):

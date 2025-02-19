@@ -435,7 +435,7 @@ class RwkvHybridModel(RwkvHybridPreTrainedModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
-            if first_rwkv_layer == True and decoder_layer.is_rwkv:
+            if first_rwkv_layer is True and decoder_layer.is_rwkv:
                 v_first = layer_outputs[-1]
                 if use_cache:
                     past_key_values.update_v_first(v_first)

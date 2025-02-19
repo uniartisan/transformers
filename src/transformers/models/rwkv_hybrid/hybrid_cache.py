@@ -13,9 +13,11 @@ class ChannelMixState:
     def __init__(self, shift_state: torch.Tensor):
         self.shift_state = shift_state
 
+
 class VfirstCache:
     def __init__(self, v_first: torch.Tensor):
         self.v_first = v_first
+
 
 class BlockState:
     def __init__(self, time_mix_state: TimeMixState,
@@ -32,17 +34,14 @@ class BlockStateList:
     @staticmethod
     def create(N, B, C, H, device, dtype):
         result = BlockStateList.empty(N, B, C, H, device, dtype)
-        result.wkv_states[:] = 0.0
-        result.wkv_states[:] = 0.0
-        result.shift_states[:] = 0.0
         return result
 
     @staticmethod
     def empty(N, B, C, H, device, dtype):
-        wkv_states = torch.empty((N, B, H, C//H, C//H),
+        wkv_states = torch.zeros((N, B, H, C//H, C//H),
                                  device=device,
                                  dtype=torch.bfloat16)
-        shift_states = torch.empty((N, 2, B, C), device=device, dtype=dtype)
+        shift_states = torch.zeros((N, 2, B, C), device=device, dtype=dtype)
         return BlockStateList(shift_states, wkv_states)
 
     def __getitem__(self, layer: int):
