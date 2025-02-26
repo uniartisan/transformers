@@ -1,13 +1,12 @@
 import torch
 from einops import rearrange
 
-from .hybrid_cache import TimeMixState, BlockState
 import math
 import torch.nn as nn
 from torch.nn import functional as F
 from .configuration_rwkv_hybrid import RwkvHybridConfig
 from typing import Optional
-from .hybrid_cache import HybridCache
+from .hybrid_cache import HybridCache, AttnState, BlockState
 
 try:
     import triton  # pylint: disable=F401
@@ -239,10 +238,11 @@ class Rwkv_Tmix_x070(nn.Module):
     def forward(
             self,
             hidden_states,
-            last_state: TimeMixState,
+            last_state: AttnState,
             use_cache: Optional[bool] = False,
             cu_seqlens: Optional[torch.Tensor] = None,
             v_first: Optional[torch.Tensor] = None,
+            attention_mask: Optional[torch.Tensor] = None,
             **kwargs
     ):
         shift_state = last_state.shift_state
@@ -273,6 +273,8 @@ class Rwkv_Tmix_x070(nn.Module):
                 self.v0 + (xv @ self.v1) @ self.v2
             ))  # add value residual
 
+        if attention_mask is not None:
+            v = v.mul(attention_mask[:, -v.shape[-2]:, None])
         a = torch.sigmoid(
             self.a0 + (xa @ self.a1) @ self.a2
         )  # a is "in-context learning rate"
@@ -309,7 +311,7 @@ class Rwkv_Tmix_x070(nn.Module):
             (weighted_sum_rk * v.view(B, T, self.n_head, -1)).view(B, T, C)
         hidden_states = self.output(
             hidden_states * g) if self.args.wkv_has_gate else self.output(hidden_states)
-        return hidden_states, TimeMixState(lx, wkv_state), v_first
+        return hidden_states, AttnState(lx, wkv_state), v_first
 
 
 class Rwkv7Attention(nn.Module):
@@ -344,14 +346,14 @@ class Rwkv7Attention(nn.Module):
             )
 
         attn_output, states, v_first = self.time_mixer(hidden_states=hidden_states,
-                                                       last_state=last_state.time_mix_state,
+                                                       last_state=last_state.attn_state,
                                                        use_cache=use_cache,
                                                        cu_seqlens=cu_seqlens,
                                                        v_first=v_first,
                                                        **kwargs)
 
         if use_cache:
-            last_state.time_mix_state = states
+            last_state.attn_state = states
             past_key_value.update(token_length, last_state, self.layer_idx)
 
         return attn_output, None, v_first
@@ -370,7 +372,7 @@ class Rwkv7Attention(nn.Module):
         shift_states = torch.zeros(
             (batch_size, self.args.hidden_size), device=device, dtype=dtype
         )
-        return BlockState(TimeMixState(shift_states, wkv_states), None)
+        return BlockState(AttnState(shift_states, wkv_states), None)
 
 
 class Rwkv_Tmix_x060(nn.Module):
@@ -469,7 +471,7 @@ class Rwkv_Tmix_x060(nn.Module):
     def forward(
         self,
         hidden_states,
-        last_state: TimeMixState,
+        last_state: AttnState,
         use_cache: Optional[bool] = False,
         cu_seqlens: Optional[torch.Tensor] = None,
         v_first: Optional[torch.Tensor] = None,
@@ -512,7 +514,7 @@ class Rwkv_Tmix_x060(nn.Module):
             hidden_states = self.ln_x(
                 hidden_states.view(B * T, C)).view(B, T, C)
         hidden_states = self.output(hidden_states * g)
-        return hidden_states, TimeMixState(lx, wkv_state)
+        return hidden_states, AttnState(lx, wkv_state), None
 
     def apply_wkv6_state(self, B, T, C, H, r, k, v, w, u, s):
         r, w, k, v = map(lambda x: rearrange(
@@ -561,29 +563,41 @@ class Rwkv6Attention(nn.Module):
         **kwargs
     ):
         attn_output = hidden_states
-        B, T, C = attn_output.size()
-        if use_cache:
-            if len(past_key_value) <= self.layer_idx:
-                last_state = None
-            else:
-                last_state = past_key_value[self.layer_idx][0]
-        if last_state is None:
-            wkv_states = torch.zeros(
-                (B, self.args.num_wkv_heads,
-                 self.args.head_size, self.args.head_size),
-                device=attn_output.device,
-                dtype=torch.float32,
+
+        batch_size, token_length, _ = hidden_states.shape
+
+        if use_cache and len(past_key_value) > self.layer_idx:
+            last_state = past_key_value[self.layer_idx][0]
+        else:
+            last_state = self.init_state(
+                batch_size, hidden_states.device, hidden_states.dtype
             )
-            token_shift = torch.zeros(
-                (B, C), device=attn_output.device, dtype=attn_output.dtype
-            )
-            time_state = TimeMixState(token_shift, wkv_states)
-            channel_state = None
-            last_state = BlockState(time_state, channel_state)
-        attn_output, states = self.time_mixer(
-            attn_output, last_state.time_mix_state)
-        last_state.time_mix_state = states
+        
+        attn_output, states, v_first = self.time_mixer(hidden_states=hidden_states,
+                                                       last_state=last_state.attn_state,
+                                                       use_cache=use_cache,
+                                                       cu_seqlens=cu_seqlens,
+                                                       v_first=v_first,
+                                                       **kwargs)
 
         if use_cache:
-            past_key_value.update(T, last_state, self.layer_idx)
-        return attn_output, None, None
+            last_state.attn_state = states
+            past_key_value.update(token_length, last_state, self.layer_idx)
+
+        return attn_output, None, v_first
+    
+    def init_state(self, batch_size, device, dtype) -> BlockState:
+        wkv_states = torch.zeros(
+            (
+                batch_size,
+                self.args.num_wkv_heads,
+                self.args.head_size,
+                self.args.head_size,
+            ),
+            device=device,
+            dtype=torch.float32,
+        )
+        shift_states = torch.zeros(
+            (batch_size, self.args.hidden_size), device=device, dtype=dtype
+        )
+        return BlockState(AttnState(shift_states, wkv_states), None)

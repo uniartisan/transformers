@@ -3,57 +3,25 @@ from typing import Any, Dict, Optional, Union
 from transformers.cache_utils import DynamicCache
 
 
-class TimeMixState:
+class AttnState:
     def __init__(self, shift_state: torch.Tensor, wkv_state: torch.Tensor):
         self.shift_state = shift_state
         self.wkv_state = wkv_state
 
 
-class ChannelMixState:
+class FfnState:
     def __init__(self, shift_state: torch.Tensor):
         self.shift_state = shift_state
 
 
-class VfirstCache:
-    def __init__(self, v_first: torch.Tensor):
-        self.v_first = v_first
-
-
 class BlockState:
-    def __init__(self, time_mix_state: TimeMixState,
-                 channel_mix_state: ChannelMixState):
-        self.time_mix_state = time_mix_state
-        self.channel_mix_state = channel_mix_state
-
-
-class BlockStateList:
-    def __init__(self, shift_states, wkv_states):
-        self.wkv_states = wkv_states
-        self.shift_states = shift_states
-
-    @staticmethod
-    def create(N, B, C, H, device, dtype):
-        result = BlockStateList.empty(N, B, C, H, device, dtype)
-        return result
-
-    @staticmethod
-    def empty(N, B, C, H, device, dtype):
-        wkv_states = torch.zeros((N, B, H, C//H, C//H),
-                                 device=device,
-                                 dtype=torch.bfloat16)
-        shift_states = torch.zeros((N, 2, B, C), device=device, dtype=dtype)
-        return BlockStateList(shift_states, wkv_states)
-
-    def __getitem__(self, layer: int):
-        return BlockState(
-            TimeMixState(self.shift_states[layer, 0], self.wkv_states[layer]),
-            ChannelMixState(self.shift_states[layer, 1]))
-
-    def __setitem__(self, layer: int, state: BlockState):
-        self.shift_states[layer, 0] = state.time_mix_state.shift_state
-        self.wkv_states[layer] = state.time_mix_state.wkv_state
-        self.shift_states[layer, 1] = state.channel_mix_state.shift_state
-
+    def __init__(
+        self, 
+        attn_state: AttnState,
+        ffn_state: FfnState
+    ):
+        self.attn_state = attn_state
+        self.ffn_state = ffn_state
 
 class HybridCache(DynamicCache):
     def __init__(self) -> None:

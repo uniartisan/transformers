@@ -118,7 +118,7 @@ def rwkv6_linear_attention(
 
 
 class Rwkv6SelfAttention(nn.Module):
-    def __init__(self, config, layer_id=0):
+    def __init__(self, config: Rwkv6Config, layer_id=0):
         super().__init__()
         self.config = config
         self.layer_id = layer_id
